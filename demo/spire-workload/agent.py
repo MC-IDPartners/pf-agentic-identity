@@ -42,11 +42,32 @@ JOBS = {
     "list-accounts": {"label": "Accounts API", "capability": "accounts_read", "tool": "list_accounts", "args": {}},
     "get-balance": {"label": "Funding account balance", "capability": "accounts_read", "tool": "get_balance",
                     "args": {"account_id": "acc-002"}},
+    # Outside an accounts reader's envelope: the agent refuses it before building a request.
+    "pay-supplier": {"label": "Supplier payment", "capability": "payment_initiation", "tool": "pay_supplier",
+                     "args": {"invoice_id": "inv-001"}},
 }
+
+
+# What the run did, step by step, printed as one line at the end - "AGENT_RESULT {json}" - whatever the outcome, for
+# a harness to check (harness.py). outcome: "ok", "refused" (the agent or a party refused, by design) or "error".
+RESULT = {"outcome": None, "reason": None, "steps": {}}
 
 
 def say(step: str, text: str) -> None:
     print(f"[{step}] {text}", flush=True)
+
+
+def record(step: str, **data) -> None:
+    RESULT["steps"].setdefault(step, {}).update(data)
+
+
+class Refused(SystemExit):
+    """The run stopped for a trust reason - a refusal by the agent itself, the provider, the authorisation server
+    or the resource - rather than a fault."""
+
+    def __init__(self, step: str, reason: str):
+        super().__init__(reason)
+        self.step, self.reason = step, reason
 
 
 def instance_key(path: str):
@@ -141,6 +162,7 @@ def main() -> None:
     authority, anchor = os.environ["AUTHORITY"], os.environ["TRUST_ANCHOR"]
     job_id = sys.argv[1] if len(sys.argv) > 1 else os.environ.get("JOB", "list-accounts")
     job = JOBS[job_id]
+    RESULT.update(agent=agent, job=job_id, capability=job["capability"])
     local = [r.strip() for r in os.environ.get("RESOURCE_IDS", "").split(",") if r.strip()]
     # Public roots for Raidiam, the network's CA for everything inside it; httpx (MCP) reads SSL_CERT_FILE.
     ca = fedresolve.ca_bundle(os.environ.get("PF_CA_FILE"))
@@ -151,18 +173,23 @@ def main() -> None:
     # 1. This copy's key.
     key, public = instance_key(os.environ.get("INSTANCE_KEY_FILE", "/state/instance.jwk"))
     say("instance", f"key {public['kid']} (stays in this container)")
+    record("instance", kid=public["kid"])
 
     # 2. The provider attests this copy, on the strength of what SPIRE says it is.
     svid = SpireWorkloadApiSvidSource(socket_path=os.environ.get("SPIRE_SOCKET", "/run/spire/sockets/agent.sock"),
                                       spire_agent=os.environ.get("SPIRE_AGENT", "spire-agent")).fetch(provider)
-    say("attest", f"SPIRE says this container is {jwt.decode(svid, options={'verify_signature': False})['sub']}")
+    spiffe_id = jwt.decode(svid, options={'verify_signature': False})['sub']
+    say("attest", f"SPIRE says this container is {spiffe_id}")
+    record("attest", spiffe_id=spiffe_id)
     r = requests.post(f"{provider}/attest", json={"client_id": agent, "instance_jwk": public, "svid": svid},
                       timeout=20, verify=ca)
     if not r.ok:
-        raise SystemExit(f"the provider would not attest this copy: {r.status_code} {r.text}")
+        record("attest", status=r.status_code, error=r.json().get("error") if r.headers.get("content-type", "").startswith("application/json") else None)
+        raise Refused("attest", f"the provider would not attest this copy: {r.status_code} {r.text}")
     attestation = r.json()["wallet_attestation"]
     claims = jwt.decode(attestation, options={"verify_signature": False})
     say("attest", f"attested by {claims['iss']} as an instance of {claims['sub']} until {time.ctime(claims['exp'])}")
+    record("attest", status=200, iss=claims["iss"], sub=claims["sub"], cnf_kid=claims.get("cnf", {}).get("jwk", {}).get("kid"))
 
     # 3. What the federation lets this agent do.
     me = resolver.resolve(agent, "openid_relying_party")
@@ -170,11 +197,13 @@ def main() -> None:
     envelope = rp.get("authorization_details_types") or []
     say("envelope", f"chain of {len(me['chain'])} to the anchor; Raidiam grants {envelope or 'no capabilities'}; "
                     f"grant types {rp.get('grant_types')}")
+    record("envelope", chain_length=len(me["chain"]), authorization_details_types=envelope,
+           grant_types=rp.get("grant_types") or [])
     if job["capability"] not in envelope:
-        raise SystemExit(f"refused before a request was built: {job['capability']} is not in this agent's envelope "
+        raise Refused("envelope", f"refused before a request was built: {job['capability']} is not in this agent's envelope "
                          f"({envelope or 'empty'}). The bank sets it on the agent's registration in Raidiam.")
     if "client_credentials" not in (rp.get("grant_types") or []):
-        raise SystemExit("refused: this agent is not governed to act as itself (no client_credentials)")
+        raise Refused("envelope", "refused: this agent is not governed to act as itself (no client_credentials)")
 
     # 4. Which service, behind which authorisation server.
     resources = discover_resources(resolver, authority, anchor, local, ca)
@@ -187,21 +216,49 @@ def main() -> None:
     chosen = next((res for res in candidates
                    if usable_as.rstrip("/") in [a.rstrip("/") for a in res.get("authorization_servers") or []]), None)
     if not chosen:
-        raise SystemExit(f"no resource in the federation serves {job['capability']} through {usable_as}")
+        record("discover", resources=len(resources), candidates=[c["entity_id"] for c in candidates])
+        raise Refused("discover", f"no resource in the federation serves {job['capability']} through {usable_as}")
     say("discover", f"chose {chosen['entity_id']} ({chosen.get('resource_name')}), interface "
                     f"{chosen.get('https://cba.com.au/federation/interface')}, authorisation server {usable_as}")
+    record("discover", resources=len(resources), chosen=chosen["entity_id"], resource=chosen["resource"],
+           authorisation_server=usable_as)
 
     # 5. A token for that resource, the agent authenticating with its attestation.
-    access_token = token(usable_as, chosen["resource"], agent, attestation, key)
+    try:
+        access_token = token(usable_as, chosen["resource"], agent, attestation, key)
+    except RuntimeError as e:
+        raise Refused("token", str(e))
     at = jwt.decode(access_token, options={"verify_signature": False})
     say("token", f"client_id {at.get('client_id')}, aud {at.get('aud')}, expires {time.ctime(at['exp'])}")
+    record("token", client_id=at.get("client_id"), aud=at.get("aud"), iss=at.get("iss"))
 
     # 6. The call.
     endpoint = (chosen.get("endpoints") or [chosen["resource"].rstrip("/") + "/mcp"])[0]
-    result = asyncio.run(call_mcp(endpoint, access_token, job["tool"], job["args"]))
+    try:
+        result = asyncio.run(call_mcp(endpoint, access_token, job["tool"], job["args"]))
+    except Exception as e:
+        status = next((getattr(x, "response", None).status_code for x in getattr(e, "exceptions", [e])
+                       if getattr(x, "response", None) is not None), None)
+        record("call", endpoint=endpoint, tool=job["tool"], status=status)
+        raise Refused("call", f"the resource refused the call: {status or e!r}")
     say("call", f"{job['tool']} at {endpoint}:")
     print(json.dumps(result, indent=2), flush=True)
+    record("call", endpoint=endpoint, tool=job["tool"], status=200, decision=result.get("decision"))
 
 
 if __name__ == "__main__":
-    main()
+    code = 0
+    try:
+        main()
+        RESULT["outcome"] = "ok"
+    except Refused as e:
+        print(e.reason, flush=True)
+        RESULT.update(outcome="refused", reason=e.reason, refused_at=e.step)
+        code = 2
+    except Exception as e:  # a fault, not a refusal
+        import traceback
+        traceback.print_exc()
+        RESULT.update(outcome="error", reason=f"{type(e).__name__}: {e}")
+        code = 1
+    print("AGENT_RESULT " + json.dumps(RESULT), flush=True)
+    sys.exit(code)
