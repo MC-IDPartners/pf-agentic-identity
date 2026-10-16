@@ -35,7 +35,7 @@ variable "spire_trust_domain" {
 variable "spire_instance_spiffe_ids" {
   description = "SPIFFE IDs (a trailing * matches a path prefix) whose holders are instances of this client"
   type        = list(string)
-  default     = ["spiffe://example.org/*"]
+  default     = ["spiffe://example.org/my-workload"]
 }
 
 variable "spire_entitlement" {

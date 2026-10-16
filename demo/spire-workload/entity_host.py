@@ -1,4 +1,5 @@
-"""Publishes the workload's Entity Configuration, so PingFederate can discover its trust chain (OIDFED §9, §10).
+"""Publishes an Entity Configuration over HTTPS, so PingFederate can resolve its trust chain (OIDFED §9, §10): the
+workload's own, or - `workload.py entity-host` - the federated attested client's, with its SPIFFE bindings.
 
 With no trust_chain in the client assertion, PingFederate resolves the chain from the client_id: it GETs
 <ENTITY_ID>/.well-known/openid-federation, follows its authority_hints to Raidiam, and validates up to the
@@ -74,7 +75,11 @@ def serve(entity_id: str, sign_entity_configuration) -> ThreadingHTTPServer:
 
     server = ThreadingHTTPServer(("0.0.0.0", port), Handler)
     context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
-    context.load_cert_chain(*_self_signed(parts.hostname))
+    # ENTITY_TLS_CERT/KEY: a certificate the fetcher trusts (the rig's runtime CA issues one); else a throwaway.
+    if os.environ.get("ENTITY_TLS_CERT") and os.environ.get("ENTITY_TLS_KEY"):
+        context.load_cert_chain(os.environ["ENTITY_TLS_CERT"], os.environ["ENTITY_TLS_KEY"])
+    else:
+        context.load_cert_chain(*_self_signed(parts.hostname))
     server.socket = context.wrap_socket(server.socket, server_side=True)
     threading.Thread(target=server.serve_forever, daemon=True).start()
     print(f"entity host: serving https://{parts.hostname}:{port}{path} (listening on :{port})", flush=True)

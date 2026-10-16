@@ -142,10 +142,14 @@ def certificate_request(private_key, subject: str) -> bytes:
 # ── Trust chain ────────────────────────────────────────────────────────────────────────────────────
 
 def entity_configuration(entity_id: str, private_key, public_jwk: dict, authority: str, client_name: str,
-                         audience: str = None) -> str:
+                         audience: str = None, client_jwks: dict = None, extra_claims: dict = None) -> str:
     """The workload's own Entity Configuration: self-issued, self-signed, naming its superior. With an audience
-    (the OP's Entity Identifier) it is an explicit registration request (OIDFED §12.2.1)."""
+    (the OP's Entity Identifier) it is an explicit registration request (OIDFED §12.2.1).
+
+    client_jwks: the keys the client authenticates with, when they are not the entity key (an attested client's
+    are its bridge key's). extra_claims: top-level claims beside the protocol's, such as spiffe_client_bindings."""
     now = int(time.time())
+    client_jwks = client_jwks or {"keys": [public_jwk]}
     claims = {
         "iss": entity_id,
         "sub": entity_id,
@@ -159,11 +163,12 @@ def entity_configuration(entity_id: str, private_key, public_jwk: dict, authorit
                 "client_registration_types": ["automatic", "explicit"],
                 "grant_types": ["client_credentials"],
                 "token_endpoint_auth_method": "private_key_jwt",
-                "token_endpoint_auth_signing_alg": public_jwk["alg"],
-                "jwks": {"keys": [public_jwk]},
+                "token_endpoint_auth_signing_alg": client_jwks["keys"][0].get("alg", public_jwk["alg"]),
+                "jwks": client_jwks,
             }
         },
     }
+    claims.update(extra_claims or {})
     if audience:
         claims["aud"] = audience
     return jwt.encode(claims, private_key, algorithm=public_jwk["alg"],

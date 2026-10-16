@@ -89,6 +89,67 @@ issued a fresh SVID.
   the advertised endpoint then, and mints without one;
 - the instance-key proof must carry `exp` as well as `iat`; the workload signs it with both.
 
+## Attestation from a federation entity
+
+In the `attestation` flow above, the attester knows which SPIFFE IDs belong to `spire-workload` because
+PingFederate holds that client, with its `attestation_*` properties. Here the **client's owner publishes it
+instead**, in its own Entity Configuration, and Raidiam vouches for that entity. PingFederate learns the client,
+its instances and their ceiling through the federation, and holds nothing of the client's except a bridge key.
+
+```mermaid
+sequenceDiagram
+    participant EH as entity-host<br/>(the client's owner)
+    participant W as attested-workload<br/>(app=spire-client)
+    participant S as SPIRE agent
+    participant AT as PF attester
+    participant AS as PF token endpoint
+    participant R as Raidiam authority + anchor
+    EH->>AS: POST /federation/register (its Entity Configuration)
+    AS->>R: resolve and validate the chain, apply policy
+    AS-->>EH: registered (again every REGISTER_EVERY s)
+    W->>S: JWT-SVID spiffe://example.org/spire-client
+    W->>AT: POST /federation/attestation (SVID, instance key, proof)
+    AT->>EH: GET <client>/.well-known/openid-federation
+    AT->>R: validate its chain to the pinned anchor (cached 300 s)
+    AT->>AT: spiffe_client_bindings: SVID → client, bundle, ceiling
+    AT-->>W: attestation (sub = the client)
+    W->>AS: token: attestation + PoP
+    AS->>AS: bridge private_key_jwt with the client's bridge key
+    AS-->>W: access token, client_id = the Raidiam client
+```
+
+| Piece | What |
+|---|---|
+| The Raidiam software statement | `ClientId` = the entity's URL (by default `https://host.docker.internal:8443/agent/spire-client`), two `rtssigning` keys: the client's **entity key** and its **bridge key** |
+| `raidiam/attested-client.sh keys` / `csr <ssid>` | Both keys and the entity host's TLS certificate, in `keys/raidiam/attested-client/`; then a CSR for each |
+| `spire-workload`'s `entity-host` service | Serves the Entity Configuration, signed with the entity key: the bridge key as the client's only key, and `spiffe_client_bindings` (`client_id`, `spiffe_id`, `issuer`, `evidence_type`, `trust_domain`, `bundle`, `entitlement`, `ttl`). It registers the client explicitly, and again before each registration ends |
+| `RAIDIAM_ATTESTED_CLIENT_ID=<entity URL>` on `up.sh` | `OIDF_ATTESTER_FEDERATION_ENTITY`, `OIDF_ATTESTER_SIGNING_JWK`, the entity host's host in `OIDF_FETCH_HOST_ALLOWLIST`, the client's bridge key in `OIDF_BRIDGE_SIGNING_KEYS` |
+| SPIRE | An entry `spiffe://example.org/spire-client` ← `docker:label:app:spire-client`; `attested-workload` runs with that label |
+
+```sh
+raidiam/attested-client.sh keys
+raidiam/attested-client.sh csr <software statement id>     # upload both CSRs as rtssigning keys
+PF_PROFILE=raidiam SPIRE_BUNDLE_FILE=… RAIDIAM_ATTESTED_CLIENT_ID=https://host.docker.internal:8443/agent/spire-client ./up.sh
+cd spire-workload && docker compose up -d entity-host && docker compose run --rm attested-workload
+```
+
+What it takes, learned the hard way:
+
+- **One client per SPIFFE ID.** An identity two clients bind is refused at issuance (`instance identity is bound
+  to more than one client`). `spire-workload` binds `spiffe://example.org/my-workload` only, and the federated client
+  `spiffe://example.org/spire-client`.
+- **A source that fails is skipped silently.** The attester asks its client sources in turn (the federation
+  entity, then PingFederate's clients) and drops one that throws, so a federation entity it cannot fetch looks like
+  "evidence identity is not registered with any client", or a mint for some other client. Its reason is at DEBUG
+  (`com.pingidentity.ps.oidf.federation.TrustChainValidator`).
+- **Federation fetches trust the JDK's CAs, not PingFederate's.** The entity host's rig-CA certificate fails PKIX,
+  so `up.sh` sets `OIDF_FEDERATION_IGNORE_SSL_ERRORS=true` with `RAIDIAM_ATTESTED_CLIENT_ID` - development only, and it
+  unchecks Raidiam's fetches too. A real entity host has a publicly trusted certificate and needs neither.
+- **The attester caches the entity for 300 s.** A change to the bindings reaches it within five minutes; a
+  restart of PingFederate is immediate.
+- **Every restart of PingFederate drops the registration** (the rig rebuilds from its archive); `docker compose
+  restart entity-host` registers it at once rather than at its next interval.
+
 ## On Windows (Git Bash)
 
 - **Terraform's plugin handshake.** Antivirus that intercepts TLS on loopback (Avast, for one) breaks Terraform's

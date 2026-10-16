@@ -40,6 +40,52 @@ services:
       - spire-sockets:/run/spire/sockets
       - ./keys:/keys
 
+  # An instance of the federated attested client: the attestation flow under the SPIFFE ID the entity host binds,
+  # so the attester takes its client from that entity, validated through Raidiam, not from PingFederate's clients.
+  #   docker compose run --rm attested-workload
+  attested-workload:
+    extends: workload
+    labels:
+      app: spire-client
+    environment:
+      AUTH_MODE: attestation
+      # Optional: name the client at mint; the attester still checks the SVID against that client's bindings.
+      ATTESTATION_CLIENT_ID: ${ATTESTED_CLIENT_ID:-https://host.docker.internal:8443/agent/spire-client}
+
+  # The federated attested client's owner (../raidiam/README.md, "Attestation from a federation entity"): serves its
+  # Entity Configuration with spiffe_client_bindings at ATTESTED_CLIENT_ID, which PingFederate's attester resolves
+  # (OIDF_ATTESTER_FEDERATION_ENTITY), and keeps the client registered at PingFederate.
+  #   docker compose up -d entity-host
+  entity-host:
+    build: .
+    command: ["python", "workload.py", "entity-host"]
+    restart: unless-stopped
+    ports:
+      - "8443:8443"
+    environment:
+      DIRECTORY_URL: ${DIRECTORY_URL:-https://data.directory.cba.raidiam.io}
+      AUTHORISATION_SERVER_ID: ${AUTHORISATION_SERVER_ID:-9b0983ce-781e-4f58-8620-0a752aafa054}
+      ISSUER_HOST_OVERRIDE: host.docker.internal:${PF_PORT_HTTPS:-9031}
+      # The ClientId of the client's Raidiam software statement; PingFederate fetches its configuration here.
+      ENTITY_ID: ${ATTESTED_CLIENT_ID:-https://host.docker.internal:8443/agent/spire-client}
+      ENTITY_LISTEN_PORT: "8443"
+      ENTITY_KEY_FILE: /keys/entity.private.jwk.json
+      CLIENT_JWKS_FILE: /keys/bridge.public.jwks.json
+      ENTITY_TLS_CERT: /keys/entity-host-tls.crt
+      ENTITY_TLS_KEY: /keys/entity-host-tls.key
+      AUTHORITY_HINT: ${AUTHORITY_HINT:-https://authority.directory.cba.raidiam.io/authority/5a27c88b-97ed-4d37-a3c8-59c66b19aa25}
+      CLIENT_NAME: SPIRE attested client (federation-sourced bindings)
+      # Its own SPIFFE identity: one bound to two clients is refused at issuance (instance identity is bound to more
+      # than one client). SPIRE needs an entry: spiffe://example.org/spire-client <- docker:label:app:spire-client.
+      SPIFFE_IDS: ${SPIFFE_IDS:-spiffe://example.org/spire-client}
+      TRUST_DOMAIN: ${TRUST_DOMAIN:-example.org}
+      SPIRE_BUNDLE_FILE: /spire/spire-bundle.jwks.json
+      PF_CA_FILE: /certs/pf-runtime-tls-ca.crt
+    volumes:
+      - ../keys/pf-runtime-tls-ca.crt:/certs/pf-runtime-tls-ca.crt:ro
+      - ../keys/raidiam/attested-client:/keys:ro
+      - ../keys/raidiam/spire-bundle.jwks.json:/spire/spire-bundle.jwks.json:ro
+
 volumes:
   spire-sockets:
     external: true

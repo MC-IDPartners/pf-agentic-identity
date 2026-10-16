@@ -58,7 +58,7 @@ import traceback
 import uuid
 
 from client_attestation_sdk import ClientAttestation
-from client_attestation_sdk.attester import MintRequest
+from client_attestation_sdk.attester import MintRequest, PingFederateProfile
 from client_attestation_sdk.svid_source import SpireWorkloadApiSvidSource
 
 import entity_host
@@ -86,6 +86,22 @@ def _instance_proof_with_exp(self, typ: str, audience: str) -> str:
 
 
 MintRequest.instance_proof = _instance_proof_with_exp
+
+# ATTESTATION_CLIENT_ID: name the client at mint. Unnamed, PingFederate's attester picks a client from its index of
+# PingFederate's own attestation clients; named, it asks its resolvers about that client - the federation entity
+# (OIDF_ATTESTER_FEDERATION_ENTITY) first - and checks the SVID against that client's bindings. The SDK's token flow
+# never sets MintRequest.client_id, so the mint is wrapped to.
+_mint = PingFederateProfile.mint
+
+
+def _mint_naming_client(self, transport, metadata, request):
+    client_id = os.environ.get("ATTESTATION_CLIENT_ID")
+    if client_id and not request.client_id:
+        request = dataclasses.replace(request, client_id=client_id)
+    return _mint(self, transport, metadata, request)
+
+
+PingFederateProfile.mint = _mint_naming_client
 
 
 def build(attester_url: str):
@@ -294,7 +310,63 @@ def run_federation_discovery_once(server) -> None:
         print("(token is not a JWT)", flush=True)
 
 
+def spiffe_client_bindings(client_id: str, issuer: str) -> list:
+    """Which SPIFFE IDs are instances of this client, and how the attester checks them: one binding per ID
+    (SPIFFE_IDS, comma-separated; a trailing * matches a path prefix). The attester reads these from this
+    entity's chain-validated Entity Configuration (OIDF_ATTESTER_FEDERATION_ENTITY)."""
+    with open(require_env("SPIRE_BUNDLE_FILE")) as f:
+        bundle = json.load(f)
+    entitlement = json.loads(os.environ.get(
+        "ENTITLEMENT", '[{"type":"sales_agent","sales_regions":["EMEA","APAC","AMER"]}]'))
+    return [{"client_id": client_id, "spiffe_id": spiffe_id.strip(), "issuer": issuer,
+             "evidence_type": "spiffe-jwt", "trust_domain": os.environ.get("TRUST_DOMAIN", "example.org"),
+             "bundle": bundle, "entitlement": entitlement, "ttl": int(os.environ.get("ATTESTATION_TTL", "300"))}
+            for spiffe_id in os.environ.get("SPIFFE_IDS", "spiffe://example.org/my-workload").split(",")]
+
+
+def run_entity_host() -> None:
+    """The federated attested client's owner, long-running: serves the client's Entity Configuration - its
+    Raidiam authority, its keys, and spiffe_client_bindings - and keeps the client registered at PingFederate.
+
+    The client authenticates with its bridge key (CLIENT_JWKS_FILE, the public half; PingFederate holds the
+    private half), so no instance holds a key of the client's. 0.7.0's token endpoint never registers a client
+    it has not seen, and an explicit registration ends with its chain, so this registers explicitly now and again
+    every REGISTER_EVERY seconds, ahead of the chain's expiry."""
+    entity_id = require_env("ENTITY_ID")
+    authority = require_env("AUTHORITY_HINT")
+    server = directory_server()
+    issuer = server["Issuer"]
+    private, public = entity_key()
+    with open(require_env("CLIENT_JWKS_FILE")) as f:
+        client_jwks = json.load(f)
+    bindings = spiffe_client_bindings(entity_id, issuer)
+    print(f"entity host: client {entity_id}, {len(bindings)} SPIFFE binding(s): "
+          + ", ".join(b["spiffe_id"] for b in bindings), flush=True)
+
+    def sign(audience=None):
+        return federation.entity_configuration(entity_id, private, public, authority,
+                                               os.environ.get("CLIENT_NAME", "spire-attested-client"),
+                                               audience=audience, client_jwks=client_jwks,
+                                               extra_claims={"spiffe_client_bindings": bindings})
+
+    entity_host.serve(entity_id, sign)
+    every = int(os.environ.get("REGISTER_EVERY", "600"))
+    while True:
+        try:
+            # Sign under the kid Raidiam publishes for the entity key; until Raidiam vouches, nothing registers.
+            public["kid"] = federation.vouched_kid(federation.subordinate_statement(authority, entity_id), public)
+            registered = federation.explicit_register(federation.registration_endpoint(issuer), sign(issuer))
+            print(f"entity host: registered {entity_id} at {issuer} until {registered.get('exp')}", flush=True)
+            time.sleep(every)
+        except Exception as e:
+            print(f"entity host: registration failed, retrying in 30 s: {e}", flush=True)
+            time.sleep(30)
+
+
 def main() -> None:
+    if len(sys.argv) > 1 and sys.argv[1] == "entity-host":
+        run_entity_host()
+        return
     if len(sys.argv) > 1 and sys.argv[1] == "entity":
         print_entity()
         return

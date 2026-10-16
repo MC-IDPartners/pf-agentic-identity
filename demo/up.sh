@@ -43,6 +43,9 @@
 #                   see raidiam/README.md. Unset: federation stays inert, as the FAPI, SSF and CIBA plans want it.
 #   SPIRE_BUNDLE_FILE  raidiam: a SPIRE trust bundle (spire-server bundle show -format spiffe); with it the
 #                   attestation client spire-workload is authored, without it the attestation flow is left out.
+#   RAIDIAM_ATTESTED_CLIENT_ID  raidiam: the Entity Identifier of a Raidiam-registered client whose own Entity
+#                   Configuration carries its spiffe_client_bindings (spire-workload's entity-host serves it): the
+#                   attester then takes SPIFFE bindings from it first. See raidiam/README.md.
 #   SUITE_PORT      federation-op: the port suite/suite-compose.yml publishes the suite on (default 9643).
 #   SUITE_BASE_URL  federation-op: the suite's origin as its compose file gives it (default
 #                   https://host.docker.internal:$SUITE_PORT). SUITE_ALIAS: the plan's alias.
@@ -174,6 +177,20 @@ text = sys.stdin.read().replace("{{SUITE_BASE_URL}}", os.environ["SUITE_BASE_URL
 public = lambda m: json.dumps(json.load(open(os.path.join(os.environ["KEYS"], m.group(1) + ".public.jwks.json"))), separators=(",", ":"))
 sys.stdout.write(re.sub(r"\{\{PUBLIC_JWKS:([a-z0-9-]+)\}\}", public, text))' > "$CTX/vars.env"
 sed -n 's/^TF_VAR_ssf_introspection_client_secret=/OIDF_SSF_INTROSPECTION_CLIENT_SECRET=/p' "$HERE/secrets.env" >> "$CTX/vars.env"
+if [[ "${PF_PROFILE:-}" == raidiam && -n "${RAIDIAM_ATTESTED_CLIENT_ID:-}" ]]; then
+  # The attester learns that client's SPIFFE bindings from its Entity Configuration, chain-validated to Raidiam's
+  # anchor, and signs its attestations with the key its token endpoint trusts (mock-attesters.json). The entity
+  # is served from the Docker host, a private address the fetch policy refuses unless named.
+  { echo "OIDF_ATTESTER_FEDERATION_ENTITY=$RAIDIAM_ATTESTED_CLIENT_ID"
+    echo "OIDF_ATTESTER_SIGNING_JWK=$(tr -d '\n' < "$HERE/keys/raidiam/attester-signing.private.jwk.json")"
+    echo "OIDF_FETCH_HOST_ALLOWLIST=$(python3 -c 'import sys,urllib.parse;print(urllib.parse.urlsplit(sys.argv[1]).hostname)' "$RAIDIAM_ATTESTED_CLIENT_ID")"
+    # Federation fetches check certificates against the JDK's trust store, not PingFederate's trusted CAs, so the
+    # entity host's certificate (from the rig's runtime CA) fails PKIX - and the attester's client chain drops a
+    # source that fails, silently, falling back to PingFederate's own clients. Development only: this unchecks
+    # every federation fetch, Raidiam's included.
+    echo "OIDF_FEDERATION_IGNORE_SSL_ERRORS=true"
+  } >> "$CTX/vars.env"
+fi
 chmod 600 "$CTX/vars.env"
 
 ( cd "$HERE" && PING_DEVOPS_CONFIG="$PING_CONFIG" docker compose up -d --build )

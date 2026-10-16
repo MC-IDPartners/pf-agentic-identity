@@ -17,12 +17,14 @@ for f in attester-signing.public.jwks.json "bridge-$CLIENT.private.jwk.json"; do
 done
 mkdir -p "$KEYS/runtime"; chmod 700 "$KEYS/runtime"
 ( umask 177
-  ISSUER="$ISSUER" CLIENT="$CLIENT" KEYS="$KEYS" node -e '
+  ISSUER="$ISSUER" CLIENT="$CLIENT" KEYS="$KEYS" ATTESTED="${RAIDIAM_ATTESTED_CLIENT_ID:-}" node -e '
     const fs = require("fs"), k = process.env.KEYS, iss = process.env.ISSUER.replace(/\/+$/, "");
     const read = f => JSON.parse(fs.readFileSync(`${k}/${f}`, "utf8"));
     fs.writeFileSync(`${k}/runtime/mock-attesters.json`, JSON.stringify({ [iss]: read("attester-signing.public.jwks.json") }));
-    fs.writeFileSync(`${k}/runtime/bridge-signing-keys.json`, JSON.stringify({
-      [process.env.CLIENT]: { jwk: read(`bridge-${process.env.CLIENT}.private.jwk.json`), attesters: [iss] } }));
+    const bridges = { [process.env.CLIENT]: { jwk: read(`bridge-${process.env.CLIENT}.private.jwk.json`), attesters: [iss] } };
+    // The federated attested client (attested-client.sh), when RAIDIAM_ATTESTED_CLIENT_ID names it.
+    if (process.env.ATTESTED) bridges[process.env.ATTESTED] = { jwk: read("attested-client/bridge.private.jwk.json"), attesters: [iss] };
+    fs.writeFileSync(`${k}/runtime/bridge-signing-keys.json`, JSON.stringify(bridges));
   ' )
 # PingFederate reads them as its own user; the directory stays 0700 on the host.
 chmod 644 "$KEYS/runtime/mock-attesters.json" "$KEYS/runtime/bridge-signing-keys.json"
