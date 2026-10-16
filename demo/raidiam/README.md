@@ -68,8 +68,11 @@ docker compose run --rm -e AUTH_MODE=federation workload            # chain in t
 docker compose run --rm -e AUTH_MODE=federation-discovery workload  # PingFederate resolves the chain
 ```
 
-The two federation flows register the same client id and run in either order: each one's registration replaces
-the other's.
+The two federation flows register the same client id and run in either order while its registration is current:
+each one's registration replaces the other's. A registration ends with its chain - with Raidiam's statements,
+about twenty minutes. An expired *automatic* registration renews at the token endpoint; an expired *explicit*
+one (from `federation-discovery`) does not, so `federation` is refused with `invalid_client` ("the client's
+explicit registration has expired") until `federation-discovery` registers it again.
 
 PingFederate binds a JWT-SVID to the first instance key that presents it. The SPIRE agent hands back the same SVID
 until it nears expiry (its JWT-SVID TTL, five minutes by default), so a second attestation run inside that window

@@ -7,6 +7,12 @@
 # JAVA_OPTS, as here. OIDF_BRIDGE_SIGNING_KEYS is in vars.raidiam.env and names the second mount.
 services:
   pingfederate:
+    # The profile's environment is the one up.sh rendered (vars.env + vars.raidiam.env), whatever the base file's
+    # env_file says - a checkout that points it elsewhere would otherwise run without the profile.
+    env_file: !override
+      - path: .context/vars.env
+      - path: ${PING_DEVOPS_CONFIG:-${HOME}/.pingidentity/config}
+        required: false
     volumes:
       - ./keys/raidiam/runtime/mock-attesters.json:/opt/pf-raidiam/mock-attesters.json:ro
       - ./keys/raidiam/runtime/bridge-signing-keys.json:/opt/pf-raidiam/bridge-signing-keys.json:ro
