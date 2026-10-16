@@ -57,6 +57,8 @@ import time
 import traceback
 import uuid
 
+import jwt
+
 from client_attestation_sdk import ClientAttestation
 from client_attestation_sdk.attester import MintRequest, PingFederateProfile
 from client_attestation_sdk.svid_source import SpireWorkloadApiSvidSource
@@ -328,6 +330,46 @@ def spiffe_client_bindings(client_id: str, issuer: str) -> list:
             for spiffe_id in os.environ.get("SPIFFE_IDS", "spiffe://example.org/my-workload").split(",")]
 
 
+def provider_entity(provider_id: str, authority: str, hosted: list) -> dict:
+    """The agent provider (raidiam/provider.sh; the pattern of CBA's https://provider.demo.cba.raidiam.io): an entity
+    of its own, with its own Raidiam software statement, whose Entity Configuration publishes the attester's key -
+    as metadata.oauth_client_attester.jwks, where PingFederate's token endpoint looks for it
+    (FederationAttesterKeyResolver), and as federation_entity.attestation_jwks, where CBA's provider puts it.
+
+    PROVIDER_KEY_FILE: its federation entity key, certified by Raidiam. ATTESTER_JWKS_FILE: the public half of the
+    key PingFederate's attester signs with (OIDF_ATTESTER_SIGNING_JWK). Returns sign(), vouch() - sign under the
+    kid Raidiam publishes - and agents(), the /agents listing."""
+    private, public = federation.load_or_create_key(require_env("PROVIDER_KEY_FILE"))
+    with open(require_env("ATTESTER_JWKS_FILE")) as f:
+        attester_jwks = json.load(f)
+    name = os.environ.get("PROVIDER_NAME", "SPIRE Agent Provider (POC)")
+
+    def sign():
+        now = int(time.time())
+        claims = {
+            "iss": provider_id, "sub": provider_id, "iat": now, "exp": now + 3600,
+            "jwks": {"keys": [public]},
+            "authority_hints": [authority],
+            "metadata": {
+                "federation_entity": {"organization_name": name, "homepage_uri": provider_id,
+                                      "attestation_jwks": attester_jwks},
+                "oauth_client_attester": {"jwks": attester_jwks},
+            },
+        }
+        return jwt.encode(claims, private, algorithm=public["alg"],
+                          headers={"typ": federation.ENTITY_STATEMENT_TYP, "kid": public["kid"]})
+
+    def vouch():
+        public["kid"] = federation.vouched_kid(federation.subordinate_statement(authority, provider_id), public)
+
+    def agents():
+        return {"publisher": provider_id,
+                "agents": [{"entity_id": entity_id, "spiffe_id": b["spiffe_id"], "trust_domain": b["trust_domain"],
+                            "published": True} for entity_id, bindings in hosted for b in bindings]}
+
+    return {"sign": sign, "vouch": vouch, "agents": agents}
+
+
 def run_entity_host() -> None:
     """The federated attested client's owner, long-running: serves the client's Entity Configuration - its
     Raidiam authority, its keys, and spiffe_client_bindings - and keeps the client registered at PingFederate.
@@ -343,9 +385,14 @@ def run_entity_host() -> None:
     private, public = entity_key()
     with open(require_env("CLIENT_JWKS_FILE")) as f:
         client_jwks = json.load(f)
-    bindings = spiffe_client_bindings(entity_id, issuer)
+    # With an agent provider (PROVIDER_ID), the attestations are the provider's: PingFederate's attester signs them
+    # as the provider, with the key the provider's Entity Configuration publishes, and the token endpoint trusts
+    # that key through the provider's chain to Raidiam's anchor. Without one, they are PingFederate's own.
+    provider_id = os.environ.get("PROVIDER_ID", "").rstrip("/")
+    bindings = spiffe_client_bindings(entity_id, provider_id or issuer)
     print(f"entity host: client {entity_id}, {len(bindings)} SPIFFE binding(s): "
-          + ", ".join(b["spiffe_id"] for b in bindings), flush=True)
+          + ", ".join(b["spiffe_id"] for b in bindings)
+          + f"; attestations issued as {provider_id or issuer}", flush=True)
 
     def sign(audience=None):
         return federation.entity_configuration(entity_id, private, public, authority,
@@ -353,12 +400,23 @@ def run_entity_host() -> None:
                                                audience=audience, client_jwks=client_jwks,
                                                extra_claims={"spiffe_client_bindings": bindings})
 
-    entity_host.serve(entity_id, sign)
+    others, documents, provider = {}, {}, None
+    if provider_id:
+        provider = provider_entity(provider_id, authority, [(entity_id, bindings)])
+        others[provider_id] = provider["sign"]
+        documents["/agents"] = provider["agents"]
+    entity_host.serve(entity_id, sign, others, documents)
     every = int(os.environ.get("REGISTER_EVERY", "600"))
     while True:
         try:
             # Sign under the kid Raidiam publishes for the entity key; until Raidiam vouches, nothing registers.
             public["kid"] = federation.vouched_kid(federation.subordinate_statement(authority, entity_id), public)
+            if provider:
+                # Until Raidiam vouches for the provider's key, its attestations are refused; the client still registers.
+                try:
+                    provider["vouch"]()
+                except Exception as e:
+                    print(f"entity host: provider not vouched for yet: {e}", flush=True)
             registered = federation.explicit_register(federation.registration_endpoint(issuer), sign(issuer))
             print(f"entity host: registered {entity_id} at {issuer} until {registered.get('exp')}", flush=True)
             time.sleep(every)

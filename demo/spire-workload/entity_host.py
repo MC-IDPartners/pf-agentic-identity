@@ -12,6 +12,7 @@ PingFederate reaches it as host.docker.internal.
 """
 import datetime
 import ipaddress
+import json
 import os
 import ssl
 import tempfile
@@ -51,20 +52,29 @@ def _self_signed(host: str):
     return cert_path, key_path
 
 
-def serve(entity_id: str, sign_entity_configuration) -> ThreadingHTTPServer:
-    """Starts serving in a daemon thread; sign_entity_configuration() returns a freshly signed JWT."""
+def serve(entity_id: str, sign_entity_configuration, others: dict = None, documents: dict = None) -> ThreadingHTTPServer:
+    """Starts serving in a daemon thread; sign_entity_configuration() returns a freshly signed JWT.
+
+    others: {entity_id: sign()} for more entities on the same host and port, such as the agent provider beside its
+    agents. documents: {path: get()} for plain JSON documents, such as the provider's /agents listing."""
     parts = urlsplit(entity_id)
-    path = parts.path.rstrip("/") + WELL_KNOWN
     port = int(os.environ.get("ENTITY_LISTEN_PORT") or parts.port or 443)
+    signers = {urlsplit(e).path.rstrip("/") + WELL_KNOWN: sign
+               for e, sign in {entity_id: sign_entity_configuration, **(others or {})}.items()}
+    documents = documents or {}
 
     class Handler(BaseHTTPRequestHandler):
         def do_GET(self):
-            if self.path.split("?")[0] != path:
+            path = self.path.split("?")[0]
+            if path in signers:
+                body, content_type = signers[path]().encode(), "application/entity-statement+jwt"
+            elif path in documents:
+                body, content_type = json.dumps(documents[path]()).encode(), "application/json"
+            else:
                 self.send_error(404)
                 return
-            body = sign_entity_configuration().encode()
             self.send_response(200)
-            self.send_header("Content-Type", "application/entity-statement+jwt")
+            self.send_header("Content-Type", content_type)
             self.send_header("Cache-Control", "no-store")
             self.send_header("Content-Length", str(len(body)))
             self.end_headers()
@@ -82,5 +92,6 @@ def serve(entity_id: str, sign_entity_configuration) -> ThreadingHTTPServer:
         context.load_cert_chain(*_self_signed(parts.hostname))
     server.socket = context.wrap_socket(server.socket, server_side=True)
     threading.Thread(target=server.serve_forever, daemon=True).start()
-    print(f"entity host: serving https://{parts.hostname}:{port}{path} (listening on :{port})", flush=True)
+    for path in [*signers, *documents]:
+        print(f"entity host: serving https://{parts.hostname}:{port}{path} (listening on :{port})", flush=True)
     return server

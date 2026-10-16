@@ -51,6 +51,9 @@ services:
       AUTH_MODE: attestation
       # Optional: name the client at mint; the attester still checks the SVID against that client's bindings.
       ATTESTATION_CLIENT_ID: ${ATTESTED_CLIENT_ID:-https://host.docker.internal:8443/agent/spire-client}
+      # With an agent provider (RAIDIAM_PROVIDER_ID) the attestations are the provider's, and the attester wants the
+      # JWT-SVID addressed to it; unset, the audience is PingFederate's issuer, from its discovery document.
+      EVIDENCE_AUDIENCE: ${RAIDIAM_PROVIDER_ID:-}
 
   # SPIRE's OIDC Discovery Provider (spire-oidc.conf): the trust domain's live JWT-SVID keys at
   # https://host.docker.internal:8445/keys, the bundle_url the federated client's bindings name. Needs a SPIRE entry
@@ -102,9 +105,16 @@ services:
       SPIRE_BUNDLE_URL: ${SPIRE_BUNDLE_URL-https://host.docker.internal:8445/keys}
       SPIRE_BUNDLE_FILE: /spire/spire-bundle.jwks.json
       PF_CA_FILE: /certs/pf-runtime-tls-ca.crt
+      # The agent provider (../raidiam/provider.sh; its own Raidiam software statement): when set, this host also
+      # serves the provider's Entity Configuration at PROVIDER_ID, publishing the attester's key, and the client's
+      # bindings name the provider as the attestations' issuer. up.sh needs the same RAIDIAM_PROVIDER_ID.
+      PROVIDER_ID: ${RAIDIAM_PROVIDER_ID-}
+      PROVIDER_KEY_FILE: /provider/entity.private.jwk.json
+      ATTESTER_JWKS_FILE: /provider/attester.public.jwks.json
     volumes:
       - ../keys/pf-runtime-tls-ca.crt:/certs/pf-runtime-tls-ca.crt:ro
       - ../keys/raidiam/attested-client:/keys:ro
+      - ../keys/raidiam/provider:/provider:ro
       - ../keys/raidiam/spire-bundle.jwks.json:/spire/spire-bundle.jwks.json:ro
 
 volumes:

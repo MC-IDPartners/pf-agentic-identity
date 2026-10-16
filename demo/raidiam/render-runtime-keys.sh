@@ -17,13 +17,15 @@ for f in attester-signing.public.jwks.json "bridge-$CLIENT.private.jwk.json"; do
 done
 mkdir -p "$KEYS/runtime"; chmod 700 "$KEYS/runtime"
 ( umask 177
-  ISSUER="$ISSUER" CLIENT="$CLIENT" KEYS="$KEYS" ATTESTED="${RAIDIAM_ATTESTED_CLIENT_ID:-}" node -e '
+  ISSUER="$ISSUER" CLIENT="$CLIENT" KEYS="$KEYS" ATTESTED="${RAIDIAM_ATTESTED_CLIENT_ID:-}" PROVIDER="${RAIDIAM_PROVIDER_ID:-}" node -e '
     const fs = require("fs"), k = process.env.KEYS, iss = process.env.ISSUER.replace(/\/+$/, "");
     const read = f => JSON.parse(fs.readFileSync(`${k}/${f}`, "utf8"));
     fs.writeFileSync(`${k}/runtime/mock-attesters.json`, JSON.stringify({ [iss]: read("attester-signing.public.jwks.json") }));
     const bridges = { [process.env.CLIENT]: { jwk: read(`bridge-${process.env.CLIENT}.private.jwk.json`), attesters: [iss] } };
-    // The federated attested client (attested-client.sh), when RAIDIAM_ATTESTED_CLIENT_ID names it.
-    if (process.env.ATTESTED) bridges[process.env.ATTESTED] = { jwk: read("attested-client/bridge.private.jwk.json"), attesters: [iss] };
+    // The federated attested client (attested-client.sh), when RAIDIAM_ATTESTED_CLIENT_ID names it; its attestations
+    // come from the agent provider (provider.sh) when RAIDIAM_PROVIDER_ID names one, else from PingFederate.
+    const provider = process.env.PROVIDER.replace(/\/+$/, "");
+    if (process.env.ATTESTED) bridges[process.env.ATTESTED] = { jwk: read("attested-client/bridge.private.jwk.json"), attesters: [provider || iss] };
     fs.writeFileSync(`${k}/runtime/bridge-signing-keys.json`, JSON.stringify(bridges));
   ' )
 #   truststore.p12             the JDK's CAs plus the rig's runtime CA, as PingFederate's JVM default trust store

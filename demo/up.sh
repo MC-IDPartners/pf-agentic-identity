@@ -46,6 +46,9 @@
 #   RAIDIAM_ATTESTED_CLIENT_ID  raidiam: the Entity Identifier of a Raidiam-registered client whose own Entity
 #                   Configuration carries its spiffe_client_bindings (spire-workload's entity-host serves it): the
 #                   attester then takes SPIFFE bindings from it first. See raidiam/README.md.
+#   RAIDIAM_PROVIDER_ID  raidiam, with RAIDIAM_ATTESTED_CLIENT_ID: the Entity Identifier of the agent provider
+#                   (raidiam/provider.sh), whose Entity Configuration publishes the attester's key: the attester signs
+#                   as it, and the token endpoint trusts it through the federation. See raidiam/README.md.
 #   SUITE_PORT      federation-op: the port suite/suite-compose.yml publishes the suite on (default 9643).
 #   SUITE_BASE_URL  federation-op: the suite's origin as its compose file gives it (default
 #                   https://host.docker.internal:$SUITE_PORT). SUITE_ALIAS: the plan's alias.
@@ -180,9 +183,13 @@ sed -n 's/^TF_VAR_ssf_introspection_client_secret=/OIDF_SSF_INTROSPECTION_CLIENT
 if [[ "${PF_PROFILE:-}" == raidiam && -n "${RAIDIAM_ATTESTED_CLIENT_ID:-}" ]]; then
   # The attester learns that client's SPIFFE bindings from its Entity Configuration, chain-validated to Raidiam's
   # anchor, and signs its attestations with the key its token endpoint trusts (mock-attesters.json). The entity
-  # is served from the Docker host, a private address the fetch policy refuses unless named.
+  # is served from the Docker host, a private address the fetch policy refuses unless named. With an agent provider
+  # (RAIDIAM_PROVIDER_ID, raidiam/provider.sh) the attester signs as the provider, with the key the provider's Entity
+  # Configuration publishes, and the token endpoint trusts that key through the provider's chain instead.
+  ATTESTER_JWK="$HERE/keys/raidiam/attester-signing.private.jwk.json"
+  [[ -z "${RAIDIAM_PROVIDER_ID:-}" ]] || ATTESTER_JWK="$HERE/keys/raidiam/provider/attester.private.jwk.json"
   { echo "OIDF_ATTESTER_FEDERATION_ENTITY=$RAIDIAM_ATTESTED_CLIENT_ID"
-    echo "OIDF_ATTESTER_SIGNING_JWK=$(tr -d '\n' < "$HERE/keys/raidiam/attester-signing.private.jwk.json")"
+    echo "OIDF_ATTESTER_SIGNING_JWK=$(tr -d '\n' < "$ATTESTER_JWK")"
     echo "OIDF_FETCH_HOST_ALLOWLIST=$(python3 -c 'import sys,urllib.parse;print(urllib.parse.urlsplit(sys.argv[1]).hostname)' "$RAIDIAM_ATTESTED_CLIENT_ID")"
   } >> "$CTX/vars.env"
 fi

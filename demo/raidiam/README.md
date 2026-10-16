@@ -157,6 +157,42 @@ What it takes, learned the hard way:
 - **Every restart of PingFederate drops the registration** (the rig rebuilds from its archive); `docker compose
   restart entity-host` registers it at once rather than at its next interval.
 
+### The agent provider: the attester trusted through the federation
+
+Above, the token endpoint trusts the attestations because their issuer's key is in `mock-attesters.json`
+(`oidf.mock.attesters`, development only). With an **agent provider** it trusts them through Raidiam instead - the
+pattern of CBA's agent provider (`https://provider.demo.cba.raidiam.io`): a federation entity of its own, vouched for
+by Raidiam, which hosts the agents' Entity Configurations and publishes the attester's key. PingFederate's attester
+signs as the provider, with that key; the token endpoint resolves the attestation's `iss` - the provider - through
+its chain to the pinned anchor and takes the key from `metadata.oauth_client_attester.jwks`
+(`FederationAttesterKeyResolver`). Issuers in `mock-attesters.json` are still taken from it first, so `spire-workload`
+is unchanged.
+
+| Piece | What |
+|---|---|
+| The provider's Raidiam software statement | Self-managed, `ClientId` = the entity host's root (`https://host.docker.internal:8443`), one `rtssigning` key: the provider's **entity key** |
+| `raidiam/provider.sh keys` / `csr <ssid>` | The entity key and the **attester key** (EC P-256), in `keys/raidiam/provider/`; then a CSR for the entity key |
+| `entity-host` with `RAIDIAM_PROVIDER_ID` | Also serves the provider's Entity Configuration at its root - the attester key as `oauth_client_attester.jwks` and, as CBA's provider has it, `federation_entity.attestation_jwks` - and `/agents`, the agents it hosts. The client's bindings name the provider as `issuer` |
+| `RAIDIAM_PROVIDER_ID` on `up.sh` | `OIDF_ATTESTER_SIGNING_JWK` = the provider's attester key; the client's bridge accepts attestations from the provider only |
+| `attested-workload` with `RAIDIAM_PROVIDER_ID` | Asks SPIRE for a JWT-SVID addressed to the provider: the attester wants the SVID's audience to be the attestation's issuer |
+
+```sh
+raidiam/provider.sh keys
+raidiam/provider.sh csr <provider's software statement id>     # upload as an rtssigning key
+export RAIDIAM_PROVIDER_ID=https://host.docker.internal:8443
+PF_PROFILE=raidiam SPIRE_BUNDLE_FILE=… RAIDIAM_ATTESTED_CLIENT_ID=https://host.docker.internal:8443/agent/spire-client ./up.sh
+cd spire-workload && docker compose up -d spire-oidc entity-host && docker compose run --rm attested-workload
+```
+
+PingFederate logs the token request as `verified attestation … attester=https://host.docker.internal:8443` after
+`Trust chain for https://host.docker.internal:8443 resolved`. With the provider publishing some other key, the token
+request is refused (`no usable key matches the token's key id`). Unlike CBA's provider, this one does not check the
+SVID itself: PingFederate's attester does, against the bindings and SPIRE's live keys, and signs on the provider's
+behalf - so the attester key lives in PingFederate, not with the provider. Two things are still the rig's: the
+agents are registered by `entity-host` (0.7.0's token endpoint does not discover an unknown client), and PingFederate
+still loads `mock-attesters.json` for `spire-workload` - its log's "trust-chain validation is DISABLED" warning
+covers only the issuers in that file.
+
 ## On Windows (Git Bash)
 
 - **Terraform's plugin handshake.** Antivirus that intercepts TLS on loopback (Avast, for one) breaks Terraform's
