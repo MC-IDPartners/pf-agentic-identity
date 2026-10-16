@@ -313,14 +313,18 @@ def run_federation_discovery_once(server) -> None:
 def spiffe_client_bindings(client_id: str, issuer: str) -> list:
     """Which SPIFFE IDs are instances of this client, and how the attester checks them: one binding per ID
     (SPIFFE_IDS, comma-separated; a trailing * matches a path prefix). The attester reads these from this
-    entity's chain-validated Entity Configuration (OIDF_ATTESTER_FEDERATION_ENTITY)."""
-    with open(require_env("SPIRE_BUNDLE_FILE")) as f:
-        bundle = json.load(f)
+    entity's chain-validated Entity Configuration (OIDF_ATTESTER_FEDERATION_ENTITY).
+
+    The trust domain's keys: SPIRE_BUNDLE_URL, a JWKS of its current JWT-SVID keys that the attester fetches at
+    issuance (SPIRE's OIDC Discovery Provider serves one), so SPIRE's rotations and revocations reach it; else
+    SPIRE_BUNDLE_FILE, a copy, which goes stale when SPIRE rotates."""
+    trust_roots = ({"bundle_url": os.environ["SPIRE_BUNDLE_URL"]} if os.environ.get("SPIRE_BUNDLE_URL")
+                   else {"bundle": json.load(open(require_env("SPIRE_BUNDLE_FILE")))})
     entitlement = json.loads(os.environ.get(
         "ENTITLEMENT", '[{"type":"sales_agent","sales_regions":["EMEA","APAC","AMER"]}]'))
     return [{"client_id": client_id, "spiffe_id": spiffe_id.strip(), "issuer": issuer,
              "evidence_type": "spiffe-jwt", "trust_domain": os.environ.get("TRUST_DOMAIN", "example.org"),
-             "bundle": bundle, "entitlement": entitlement, "ttl": int(os.environ.get("ATTESTATION_TTL", "300"))}
+             **trust_roots, "entitlement": entitlement, "ttl": int(os.environ.get("ATTESTATION_TTL", "300"))}
             for spiffe_id in os.environ.get("SPIFFE_IDS", "spiffe://example.org/my-workload").split(",")]
 
 

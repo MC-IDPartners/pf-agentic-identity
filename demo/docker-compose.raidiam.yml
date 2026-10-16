@@ -16,5 +16,9 @@ services:
     volumes:
       - ./keys/raidiam/runtime/mock-attesters.json:/opt/pf-raidiam/mock-attesters.json:ro
       - ./keys/raidiam/runtime/bridge-signing-keys.json:/opt/pf-raidiam/bridge-signing-keys.json:ro
+      # The JDK's own cacerts, replaced by the image's CAs plus the rig's (raidiam/render-runtime-keys.sh): the modules'
+      # federation and remote-JWKS fetches use the JVM's default SSL context, which checks against this file -
+      # not PingFederate's trusted CAs, and not -Djavax.net.ssl.trustStore, which this PingFederate does not honour.
+      - ./keys/raidiam/runtime/truststore.p12:/opt/java/lib/security/cacerts:ro
     environment:
       JAVA_OPTS: "-Doidf.mock.attesters=/opt/pf-raidiam/mock-attesters.json"

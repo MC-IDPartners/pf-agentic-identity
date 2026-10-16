@@ -52,6 +52,25 @@ services:
       # Optional: name the client at mint; the attester still checks the SVID against that client's bindings.
       ATTESTATION_CLIENT_ID: ${ATTESTED_CLIENT_ID:-https://host.docker.internal:8443/agent/spire-client}
 
+  # SPIRE's OIDC Discovery Provider (spire-oidc.conf): the trust domain's live JWT-SVID keys at
+  # https://host.docker.internal:8445/keys, the bundle_url the federated client's bindings name. Needs a SPIRE entry
+  # spiffe://example.org/spire-oidc <- docker:label:app:spire-oidc, and its certificate from the rig's CA
+  # (keys/raidiam/spire-oidc/, see ../raidiam/README.md).
+  #   docker compose up -d spire-oidc
+  spire-oidc:
+    image: ghcr.io/spiffe/oidc-discovery-provider:1.9.0
+    command: ["-config", "/run/spire-oidc/oidc.conf"]
+    restart: unless-stopped
+    labels:
+      app: spire-oidc
+    ports:
+      - "8445:8445"
+    volumes:
+      - ./spire-oidc.conf:/run/spire-oidc/oidc.conf:ro
+      - ../keys/raidiam/spire-oidc/tls.crt:/run/spire-oidc/tls.crt:ro
+      - ../keys/raidiam/spire-oidc/tls.key:/run/spire-oidc/tls.key:ro
+      - spire-sockets:/run/spire/sockets
+
   # The federated attested client's owner (../raidiam/README.md, "Attestation from a federation entity"): serves its
   # Entity Configuration with spiffe_client_bindings at ATTESTED_CLIENT_ID, which PingFederate's attester resolves
   # (OIDF_ATTESTER_FEDERATION_ENTITY), and keeps the client registered at PingFederate.
@@ -79,6 +98,8 @@ services:
       # than one client). SPIRE needs an entry: spiffe://example.org/spire-client <- docker:label:app:spire-client.
       SPIFFE_IDS: ${SPIFFE_IDS:-spiffe://example.org/spire-client}
       TRUST_DOMAIN: ${TRUST_DOMAIN:-example.org}
+      # The trust domain's live JWT-SVID keys (spire-oidc); unset, the copy below is published instead.
+      SPIRE_BUNDLE_URL: ${SPIRE_BUNDLE_URL-https://host.docker.internal:8445/keys}
       SPIRE_BUNDLE_FILE: /spire/spire-bundle.jwks.json
       PF_CA_FILE: /certs/pf-runtime-tls-ca.crt
     volumes:

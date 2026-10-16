@@ -184,11 +184,6 @@ if [[ "${PF_PROFILE:-}" == raidiam && -n "${RAIDIAM_ATTESTED_CLIENT_ID:-}" ]]; t
   { echo "OIDF_ATTESTER_FEDERATION_ENTITY=$RAIDIAM_ATTESTED_CLIENT_ID"
     echo "OIDF_ATTESTER_SIGNING_JWK=$(tr -d '\n' < "$HERE/keys/raidiam/attester-signing.private.jwk.json")"
     echo "OIDF_FETCH_HOST_ALLOWLIST=$(python3 -c 'import sys,urllib.parse;print(urllib.parse.urlsplit(sys.argv[1]).hostname)' "$RAIDIAM_ATTESTED_CLIENT_ID")"
-    # Federation fetches check certificates against the JDK's trust store, not PingFederate's trusted CAs, so the
-    # entity host's certificate (from the rig's runtime CA) fails PKIX - and the attester's client chain drops a
-    # source that fails, silently, falling back to PingFederate's own clients. Development only: this unchecks
-    # every federation fetch, Raidiam's included.
-    echo "OIDF_FEDERATION_IGNORE_SSL_ERRORS=true"
   } >> "$CTX/vars.env"
 fi
 chmod 600 "$CTX/vars.env"

@@ -122,15 +122,17 @@ sequenceDiagram
 |---|---|
 | The Raidiam software statement | `ClientId` = the entity's URL (by default `https://host.docker.internal:8443/agent/spire-client`), two `rtssigning` keys: the client's **entity key** and its **bridge key** |
 | `raidiam/attested-client.sh keys` / `csr <ssid>` | Both keys and the entity host's TLS certificate, in `keys/raidiam/attested-client/`; then a CSR for each |
-| `spire-workload`'s `entity-host` service | Serves the Entity Configuration, signed with the entity key: the bridge key as the client's only key, and `spiffe_client_bindings` (`client_id`, `spiffe_id`, `issuer`, `evidence_type`, `trust_domain`, `bundle`, `entitlement`, `ttl`). It registers the client explicitly, and again before each registration ends |
+| `spire-workload`'s `entity-host` service | Serves the Entity Configuration, signed with the entity key: the bridge key as the client's only key, and `spiffe_client_bindings` (`client_id`, `spiffe_id`, `issuer`, `evidence_type`, `trust_domain`, `bundle_url`, `entitlement`, `ttl`). It registers the client explicitly, and again before each registration ends |
 | `RAIDIAM_ATTESTED_CLIENT_ID=<entity URL>` on `up.sh` | `OIDF_ATTESTER_FEDERATION_ENTITY`, `OIDF_ATTESTER_SIGNING_JWK`, the entity host's host in `OIDF_FETCH_HOST_ALLOWLIST`, the client's bridge key in `OIDF_BRIDGE_SIGNING_KEYS` |
-| SPIRE | An entry `spiffe://example.org/spire-client` ← `docker:label:app:spire-client`; `attested-workload` runs with that label |
+| `spire-workload`'s `spire-oidc` service | SPIRE's OIDC Discovery Provider: the trust domain's **current** JWT-SVID keys at `https://host.docker.internal:8445/keys`, read through the agent's Workload API. The bindings name it as `bundle_url`, so the attester verifies each SVID against what SPIRE holds now (fetched at issuance, cached 300 s) - SPIRE's rotations reach it, and with SPIRE's keys unreachable it issues nothing. Its certificate is from the rig's CA, in `keys/raidiam/spire-oidc/` |
+| The trust store | `raidiam/render-runtime-keys.sh` builds the image's own CAs plus the rig's into `truststore.p12`, mounted over the JDK's `cacerts`: the modules' fetches use the JVM's default SSL context, so this is what lets PingFederate check the entity host's and SPIRE's certificates - and Raidiam's - rather than skipping the checks |
+| SPIRE | Entries `spiffe://example.org/spire-client` ← `docker:label:app:spire-client` (`attested-workload` runs with that label) and `spiffe://example.org/spire-oidc` ← `docker:label:app:spire-oidc` (the provider) |
 
 ```sh
 raidiam/attested-client.sh keys
 raidiam/attested-client.sh csr <software statement id>     # upload both CSRs as rtssigning keys
 PF_PROFILE=raidiam SPIRE_BUNDLE_FILE=… RAIDIAM_ATTESTED_CLIENT_ID=https://host.docker.internal:8443/agent/spire-client ./up.sh
-cd spire-workload && docker compose up -d entity-host && docker compose run --rm attested-workload
+cd spire-workload && docker compose up -d spire-oidc entity-host && docker compose run --rm attested-workload
 ```
 
 What it takes, learned the hard way:
@@ -142,9 +144,14 @@ What it takes, learned the hard way:
   entity, then PingFederate's clients) and drops one that throws, so a federation entity it cannot fetch looks like
   "evidence identity is not registered with any client", or a mint for some other client. Its reason is at DEBUG
   (`com.pingidentity.ps.oidf.federation.TrustChainValidator`).
-- **Federation fetches trust the JDK's CAs, not PingFederate's.** The entity host's rig-CA certificate fails PKIX,
-  so `up.sh` sets `OIDF_FEDERATION_IGNORE_SSL_ERRORS=true` with `RAIDIAM_ATTESTED_CLIENT_ID` - development only, and it
-  unchecks Raidiam's fetches too. A real entity host has a publicly trusted certificate and needs neither.
+- **Federation and JWKS fetches trust the JDK's `cacerts` file - nothing else.** Not PingFederate's trusted CAs,
+  and not `-Djavax.net.ssl.trustStore`. Hence the trust store mounted over `cacerts`, which must be built as the JDK
+  builds its own: unprotected (`keystore.pkcs12.certProtectionAlgorithm=NONE`, `macAlgorithm=NONE`), since the JVM
+  reads it with no password and keytool's default encrypts the certificates - a store that then reads as holding
+  none, and fails Raidiam's TLS too. A real entity host and OIDC provider have publicly trusted certificates and
+  need none of this.
+- **A remote bundle keeps only keys whose `use` is `sig` or absent.** SPIRE's own bundle endpoint marks its keys
+  `jwt-svid` / `x509-svid`, so it can't be a `bundle_url`; its OIDC Discovery Provider can.
 - **The attester caches the entity for 300 s.** A change to the bindings reaches it within five minutes; a
   restart of PingFederate is immediate.
 - **Every restart of PingFederate drops the registration** (the rig rebuilds from its archive); `docker compose

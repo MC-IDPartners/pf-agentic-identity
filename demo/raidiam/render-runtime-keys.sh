@@ -26,6 +26,31 @@ mkdir -p "$KEYS/runtime"; chmod 700 "$KEYS/runtime"
     if (process.env.ATTESTED) bridges[process.env.ATTESTED] = { jwk: read("attested-client/bridge.private.jwk.json"), attesters: [iss] };
     fs.writeFileSync(`${k}/runtime/bridge-signing-keys.json`, JSON.stringify(bridges));
   ' )
+#   truststore.p12             the JDK's CAs plus the rig's runtime CA, as PingFederate's JVM default trust store
+#                              (JAVA_OPTS in docker-compose.raidiam.yml). The modules' federation and remote-JWKS fetches
+#                              check certificates against that store, not PingFederate's trusted CAs, so this is what
+#                              lets them reach the rig's own hosts - the entity host, SPIRE's OIDC provider - with
+#                              certificates checked, Raidiam's included.
+KEYTOOL="$(command -v keytool || true)"
+[[ -n "$KEYTOOL" || -z "${JAVA_HOME:-}" ]] || KEYTOOL="$JAVA_HOME/bin/keytool"
+[[ -n "$KEYTOOL" ]] || { echo "ERROR: keytool not found - put a JDK's bin on PATH or set JAVA_HOME" >&2; exit 1; }
+# The image's own CAs, so PingFederate keeps exactly the roots it ships with; on a first run, before the image is
+# built, the host JDK's.
+IMAGE="${PF_RIG_NAME:-pf-agentic-identity}/pingfederate:local"
+CACERTS="$KEYS/runtime/image-cacerts"
+if ! MSYS_NO_PATHCONV=1 docker run --rm --entrypoint cat "$IMAGE" /opt/java/lib/security/cacerts > "$CACERTS" 2>/dev/null; then
+  CACERTS="$(cd "$(dirname "$(command -v "$KEYTOOL")")/.." && pwd)/lib/security/cacerts"
+  echo "NOTE: no $IMAGE yet - the trust store starts from the host JDK's CAs; run up.sh again to use the image's" >&2
+fi
+[[ -s "$CACERTS" ]] || { echo "ERROR: no JDK cacerts at $CACERTS" >&2; exit 1; }
+# Unprotected, as the JDK builds its own cacerts: the JVM reads that file with no password, and a store whose
+# certificates keytool encrypted (its default) reads as holding none.
+UNPROTECTED=(-J-Dkeystore.pkcs12.certProtectionAlgorithm=NONE -J-Dkeystore.pkcs12.macAlgorithm=NONE)
+rm -f "$KEYS/runtime/truststore.p12"
+"$KEYTOOL" "${UNPROTECTED[@]}" -importkeystore -noprompt -srckeystore "$CACERTS" -srcstorepass changeit \
+  -destkeystore "$KEYS/runtime/truststore.p12" -deststoretype PKCS12 -deststorepass changeit >/dev/null 2>&1
+"$KEYTOOL" "${UNPROTECTED[@]}" -importcert -noprompt -alias pf-agentic-identity-rig-ca -file "$HERE/keys/pf-runtime-tls-ca.crt" \
+  -keystore "$KEYS/runtime/truststore.p12" -storetype PKCS12 -storepass changeit >/dev/null
 # PingFederate reads them as its own user; the directory stays 0700 on the host.
-chmod 644 "$KEYS/runtime/mock-attesters.json" "$KEYS/runtime/bridge-signing-keys.json"
+chmod 644 "$KEYS/runtime/mock-attesters.json" "$KEYS/runtime/bridge-signing-keys.json" "$KEYS/runtime/truststore.p12"
 echo "rendered  keys/raidiam/runtime/ for issuer $ISSUER"
