@@ -7,6 +7,7 @@ provider "registry.terraform.io/pingidentity/pingfederate" {
   hashes = [
     "h1:0fxWRnvukVASJucbw/bU5b8v6t4PWSAzbMLcPVRuowo=",
     "h1:8IGl+dqwY00h7WKyrtPB6QxxZ39GPr27hV+WnBMPqjM=",
+    "h1:cBwaZ9LEZhz0IxTkaw4nFGW98/a6JBpdILJ4v7KapIA=",
     "h1:vuA8ZWOgG1euHdZXj0Hr+XZql7nspX5VJkz24cvQOS4=",
     "h1:xpBxqlbcfaJAqnivagga2cAUxUBPeyLS193N1KYZWB4=",
     "zh:036961798c4f37228186cb66d7c42d0f6d32e54814c8ad82a4ced49b37f6efee",

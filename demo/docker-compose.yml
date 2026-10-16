@@ -29,7 +29,7 @@ services:
     # Both files are required in practice; `required: false` only lets `docker compose config` run before
     # up.sh has rendered the first, and PF then fails at boot with a clear licence or issuer error.
     env_file:
-      - path: .context/vars.env
+      - path: .env
         required: false
       # PING_IDENTITY_DEVOPS_USER / PING_IDENTITY_DEVOPS_KEY - yours, never in git. up.sh checks it exists.
       - path: ${PING_DEVOPS_CONFIG:-${HOME}/.pingidentity/config}
