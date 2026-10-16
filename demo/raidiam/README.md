@@ -252,6 +252,11 @@ docker compose run --rm agent list-accounts        # or get-balance
 The registration is still `entity-host`'s (0.7.0's token endpoint does not discover an unknown client), so
 `docker compose restart entity-host` after a restart of PingFederate.
 
+## In a protected environment
+
+Everything privately hosted, able to call Raidiam but not be called by it: what works, what does not, and what to fix
+for production - [PROTECTED-ENVIRONMENTS.md](PROTECTED-ENVIRONMENTS.md).
+
 ## On Windows (Git Bash)
 
 - **Terraform's plugin handshake.** Antivirus that intercepts TLS on loopback (Avast, for one) breaks Terraform's
