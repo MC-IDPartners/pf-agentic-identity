@@ -1,0 +1,46 @@
+# The SPIRE workload against the raidiam rig (PF_PROFILE=raidiam ../up.sh). One service, three flows:
+#
+#   docker compose run --rm workload                                       # AUTH_MODE=attestation (default)
+#   docker compose run --rm -e AUTH_MODE=federation workload               # trust chain in the client assertion
+#   docker compose run --rm -e AUTH_MODE=federation-discovery workload     # PingFederate resolves the chain
+#
+# It needs a running SPIRE agent whose Workload API socket is in the named volume SPIRE_SOCKETS_VOLUME (default
+# spire_spire-agent-sockets: the agent of a compose project called "spire"), and a registration entry selecting
+# this container (docker:label:app:my-workload -> spiffe://example.org/my-workload). The federation flows need
+# ENTITY_KEY_FILE's key certified by Raidiam for ENTITY_ID (see ../raidiam/README.md); the attestation flow needs
+# neither.
+services:
+  workload:
+    build: .
+    restart: "no"
+    labels:
+      app: my-workload
+    environment:
+      # The authorisation server comes from the Raidiam directory. Its Issuer is the rig's PF_BASE_URL; this
+      # container reaches PingFederate on the Docker host instead.
+      DIRECTORY_URL: ${DIRECTORY_URL:-https://data.directory.cba.raidiam.io}
+      AUTHORISATION_SERVER_ID: ${AUTHORISATION_SERVER_ID:-9b0983ce-781e-4f58-8620-0a752aafa054}
+      ISSUER_HOST_OVERRIDE: host.docker.internal:${PF_PORT_HTTPS:-9031}
+      AUTH_MODE: ${AUTH_MODE:-attestation}
+      # The federation flows: the workload's Entity Identifier (the ClientId on its Raidiam software statement),
+      # its key, its superior and the anchor PingFederate pins.
+      ENTITY_ID: ${ENTITY_ID:-https://localhost/agent/my-workload}
+      ENTITY_KEY_FILE: /keys/entity.jwk
+      AUTHORITY_HINT: ${AUTHORITY_HINT:-https://authority.directory.cba.raidiam.io/authority/5a27c88b-97ed-4d37-a3c8-59c66b19aa25}
+      TRUST_ANCHOR: ${TRUST_ANCHOR:-https://federation.directory.cba.raidiam.io/federation_entity/ff726945-ebd7-45e2-9869-c11227669433}
+      # The attestation flow: what the instance asks for, held to the client's attestation_entitlement ceiling.
+      SPIRE_SOCKET: /run/spire/sockets/agent.sock
+      PROOF_MODE: pop
+      AUTHORIZATION_DETAILS: '[{"type":"sales_agent","sales_regions":["EMEA"]}]'
+      # PingFederate's runtime certificate is issued by the rig's own CA (../gen-keys.sh).
+      PF_CA_FILE: /certs/pf-runtime-tls-ca.crt
+      SSL_CERT_FILE: /certs/pf-runtime-tls-ca.crt
+    volumes:
+      - ../keys/pf-runtime-tls-ca.crt:/certs/pf-runtime-tls-ca.crt:ro
+      - spire-sockets:/run/spire/sockets
+      - ./keys:/keys
+
+volumes:
+  spire-sockets:
+    external: true
+    name: ${SPIRE_SOCKETS_VOLUME:-spire_spire-agent-sockets}

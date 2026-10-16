@@ -38,8 +38,11 @@
 #   PF_PROFILE      federation: PF is its own Trust Anchor (vars.federation.env), for the suite's
 #                   deployed-entity plan. federation-op: that, and PF joined to the suite's own federation
 #                   (vars.federation-op.env) with PAR optional and the suite's CA trusted, for the OP plan -
-#                   run the suite with suite/suite-compose.yml. Unset: federation stays inert, as the FAPI,
-#                   SSF and CIBA plans want it.
+#                   run the suite with suite/suite-compose.yml. raidiam: PF as an OP in Raidiam's CBA
+#                   federation (vars.raidiam.env) with SPIFFE client attestation, for demo/spire-workload -
+#                   see raidiam/README.md. Unset: federation stays inert, as the FAPI, SSF and CIBA plans want it.
+#   SPIRE_BUNDLE_FILE  raidiam: a SPIRE trust bundle (spire-server bundle show -format spiffe); with it the
+#                   attestation client spire-workload is authored, without it the attestation flow is left out.
 #   SUITE_PORT      federation-op: the port suite/suite-compose.yml publishes the suite on (default 9643).
 #   SUITE_BASE_URL  federation-op: the suite's origin as its compose file gives it (default
 #                   https://host.docker.internal:$SUITE_PORT). SUITE_ALIAS: the plan's alias.
@@ -74,8 +77,8 @@ export PF_BASE_URL="${PF_BASE_URL:-https://localhost:$PF_PORT_HTTPS}"
 LOCAL="https://localhost:$PF_PORT_HTTPS"
 export TF_VAR_pf_base_url="$PF_BASE_URL"
 case "${PF_PROFILE:-}" in
-  "" | federation | federation-op) ;;
-  *) echo "ERROR: PF_PROFILE=$PF_PROFILE is not a profile this rig has (federation, federation-op)" >&2; exit 1 ;;
+  "" | federation | federation-op | raidiam) ;;
+  *) echo "ERROR: PF_PROFILE=$PF_PROFILE is not a profile this rig has (federation, federation-op, raidiam)" >&2; exit 1 ;;
 esac
 SUITE_PORT="${SUITE_PORT:-9643}"
 SUITE_BASE_URL="${SUITE_BASE_URL:-https://host.docker.internal:$SUITE_PORT}"
@@ -122,6 +125,17 @@ if [[ "${SKIP_AUTHOR:-0}" != 1 ]]; then
     TF_VAR_trusted_ca_file_data="$(openssl x509 -in "$HERE/keys/suite-tls-ca.crt" -outform DER | base64 | tr -d '\n')"
     export TF_VAR_trusted_ca_file_data
   fi
+  if [[ "${PF_PROFILE:-}" == raidiam ]]; then
+    # The attester's and the bridge's keys, and - with SPIRE_BUNDLE_FILE - the SPIRE bundle the attestation
+    # client verifies JWT-SVIDs with; terraform/attestation.tf authors the client from them.
+    "$HERE/raidiam/gen-keys.sh"
+    if [[ -n "${SPIRE_BUNDLE_FILE:-}" ]]; then
+      "$HERE/raidiam/import-spire-bundle.sh" "$SPIRE_BUNDLE_FILE"
+      export TF_VAR_spire_attestation_client=true
+    else
+      echo "NOTE: SPIRE_BUNDLE_FILE unset - no attestation client; the federation flows still work" >&2
+    fi
+  fi
   "$HERE/author.sh"
   # One resource at a time: in parallel, PingFederate has twice read back its server settings as the defaults straight
   # after they were written, and the provider fails the apply ("inconsistent result after apply").
@@ -143,7 +157,15 @@ PROFILE_VARS=()
 case "${PF_PROFILE:-}" in
   federation) PROFILE_VARS=("$HERE/vars.federation.env") ;;
   federation-op) PROFILE_VARS=("$HERE/vars.federation.env" "$HERE/vars.federation-op.env") ;;
+  raidiam) PROFILE_VARS=("$HERE/vars.raidiam.env") ;;
 esac
+if [[ "${PF_PROFILE:-}" == raidiam ]]; then
+  # The attester PF trusts at its own token endpoint (oidf.mock.attesters) and the bridge keys, mounted by
+  # docker-compose.raidiam.yml. Both name the issuer, so they are rendered for this one.
+  "$HERE/raidiam/render-runtime-keys.sh" "$PF_BASE_URL"
+  # ":" explicitly: docker compose splits COMPOSE_FILE on ";" on Windows by default.
+  export COMPOSE_PATH_SEPARATOR=":" COMPOSE_FILE="docker-compose.yml:docker-compose.raidiam.yml"
+fi
 cat "$HERE/vars.env" ${PROFILE_VARS[@]+"${PROFILE_VARS[@]}"} \
   | sed -E "/^(OIDF_SSF_ISSUER|OIDF_FEDERATION_[A-Z_]+)=/ s#https://localhost:9031#$PF_BASE_URL#" \
   | KEYS="$HERE/keys" SUITE_BASE_URL="$SUITE_BASE_URL" SUITE_ALIAS="$SUITE_ALIAS" python3 -c '

@@ -55,8 +55,9 @@ if [[ "${audience_rule:-0}" -eq 0 ]]; then
 fi
 # COUNT the matches; never `grep -q` here. Under `set -o pipefail`, grep -q exits at its first match,
 # unzip dies of SIGPIPE, and the pipeline reports failure - a plugin that IS in the archive reads as
-# absent (the assemble script has the same note, learned the same way).
-sim_hits="$(unzip -p "$HERE/data.zip.tmp" '*' 2>/dev/null | LC_ALL=C grep -ac 'SimOobAuthenticator' || true)"
+# absent (the assemble script has the same note, learned the same way). No member pattern: with none, unzip
+# prints every member, and a '*' pattern matches nothing under Git for Windows' unzip.
+sim_hits="$(unzip -p "$HERE/data.zip.tmp" 2>/dev/null | LC_ALL=C grep -ac 'SimOobAuthenticator' || true)"
 if [[ "${sim_hits:-0}" -eq 0 ]]; then
   rm -f "$HERE/data.zip.tmp"
   echo "ERROR: the archive has no CIBA simulator instance - was terraform/ciba.tf applied against an" >&2

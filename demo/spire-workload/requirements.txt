@@ -1,0 +1,1 @@
+client-attestation-sdk[requests]

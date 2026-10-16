@@ -22,6 +22,9 @@
 # archive already exported with its public half in it. Delete keys/ or secrets.env to rotate, then
 # re-apply terraform and re-export.
 set -euo pipefail
+# Git for Windows rewrites an argument that looks like a POSIX path, openssl's -subj "/CN=..." among them; this
+# leaves those alone, and means nothing elsewhere.
+export MSYS2_ARG_CONV_EXCL="/CN="
 HERE="$(cd "$(dirname "$0")" && pwd)"
 KEYS="$HERE/keys"
 mkdir -p "$KEYS"; chmod 700 "$KEYS"

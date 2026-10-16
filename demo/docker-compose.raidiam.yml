@@ -1,0 +1,14 @@
+# The raidiam profile's additions to the running rig (PF_PROFILE=raidiam ./up.sh layers this on itself):
+# the two files raidiam/render-runtime-keys.sh renders for the issuer, mounted read-only, and the system
+# property that points PingFederate's token endpoint at the attester it trusts.
+#
+# oidf.mock.attesters is a development hook - trusted attester keys with no federation chain - which the image
+# no longer sets (0.6.0, R-I3) and the production profile refuses; the image README says to set it through
+# JAVA_OPTS, as here. OIDF_BRIDGE_SIGNING_KEYS is in vars.raidiam.env and names the second mount.
+services:
+  pingfederate:
+    volumes:
+      - ./keys/raidiam/runtime/mock-attesters.json:/opt/pf-raidiam/mock-attesters.json:ro
+      - ./keys/raidiam/runtime/bridge-signing-keys.json:/opt/pf-raidiam/bridge-signing-keys.json:ro
+    environment:
+      JAVA_OPTS: "-Doidf.mock.attesters=/opt/pf-raidiam/mock-attesters.json"

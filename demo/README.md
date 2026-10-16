@@ -83,6 +83,13 @@ fetches the RP's `jwks_uri` itself when it checks a request object, and checks t
 other. So the suite has to be one whose certificate that CA issued: `suite/suite-compose.yml` runs one,
 with `keys/suite-tls.crt`.
 
+**The raidiam profile joins PF to Raidiam's CBA federation, with SPIFFE client attestation.**
+`PF_PROFILE=raidiam` (with `SPIRE_BUNDLE_FILE` for the attestation client) adds `vars.raidiam.env` and
+`docker-compose.raidiam.yml`: Raidiam's anchor pinned, attestation on with a development attester and bridge
+keys, and `terraform/attestation.tf`'s client. `spire-workload/` then gets a token three ways - client
+attestation from a SPIRE JWT-SVID, a trust chain in its client assertion, and PingFederate resolving its chain
+itself. Development only; [raidiam/README.md](raidiam/README.md) says what to set up in Raidiam and SPIRE.
+
 **A second rig runs beside the first.** `PF_RIG_NAME` names the container, the image and the compose
 project, so a rig built from another checkout doesn't replace this one. From 0.7.0 `PF_RIG_SLOT` (0 to 44) gives it
 a slot's ports - 57100 + 20 x slot for HTTPS, then HTTP, admin and the authoring server's two - and the name
