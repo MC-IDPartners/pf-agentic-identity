@@ -193,6 +193,65 @@ agents are registered by `entity-host` (0.7.0's token endpoint does not discover
 still loads `mock-attesters.json` for `spire-workload` - its log's "trust-chain validation is DISABLED" warning
 covers only the issuers in that file.
 
+## The agent-r flow
+
+CBA's agent-r (`node agent.mjs`) is handed only its agent's identifier and works the rest out from the federation:
+its provider attests the running copy, it reads its own capabilities from the authority, finds a resource that serves
+the job, gets a token with `attest_jwt_client_auth` and calls the resource's MCP tool. `spire-workload` runs the same
+flow with every component in a container, inside a "protected network" Raidiam cannot reach - as the bank's would be.
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant A as agent<br/>(app=spire-client)
+    participant S as SPIRE agent
+    participant P as entity-host<br/>(agent provider :8443)
+    participant O as spire-oidc
+    participant R as Raidiam<br/>(authority, anchor)
+    participant PF as PingFederate
+    participant RS as rs-accounts<br/>(MCP :8446)
+    A->>A: instance key (stays in the container)
+    A->>S: JWT-SVID, aud = provider
+    A->>P: POST /attest {client_id, instance_jwk, svid}
+    P->>O: SPIRE's live keys
+    P->>P: SVID valid, its SPIFFE ID bound to client_id
+    P-->>A: wallet_attestation (iss = provider, sub = agent, cnf = instance key)
+    A->>P: the agent's Entity Configuration
+    A->>R: the authority's statement about the agent (/fetch), the anchor's about the authority
+    A->>A: verify down from the pinned anchor key, apply policy: capabilities (authorization_details_types)
+    A->>R: /list?entity_type=oauth_resource (public resources)
+    A->>RS: its Entity Configuration (the network's own resource, which Raidiam cannot list)
+    A->>R: the authority's statement about the resource
+    A->>A: a resource serving the job's capability, protected by PingFederate
+    A->>PF: token: attestation + PoP, client_credentials, resource = rs-accounts
+    PF->>P: the provider's Entity Configuration
+    PF->>R: the provider's chain: its attester key
+    PF-->>A: access token, aud = rs-accounts
+    A->>RS: MCP tools/call, Bearer token
+    RS->>PF: PingFederate's keys: the token is signed, for this resource, unexpired
+    RS->>R: the agent's chain: still a member, and granted accounts_read
+    RS-->>A: the result, and the decision behind it
+```
+
+| Component | What |
+|---|---|
+| `agent` (`agent.py`) | agent-r's steps. Unlike agent-r it resolves chains itself (`fedresolve.py`): Raidiam's `/resolve` fetches the leaf, which it cannot reach in the protected network, but its `/fetch` - the authority's signed statement - needs nothing from the leaf. Trust is still Raidiam's: every statement is verified down from the pinned anchor key |
+| `entity-host` `/attest` | The provider attests a copy itself, signing with its attester key (`keys/raidiam/provider/attester.*`), as CBA's provider does. It wants the copy's JWT-SVID as well, checked against SPIRE's live keys and the agent's bindings - CBA's provider attests whatever key it is sent |
+| `rs-accounts` (`rs_accounts.py`) | An MCP server (tools `list_accounts`, `get_balance`) and a federation entity: `oauth_resource` metadata naming PingFederate. It checks the token, then the caller's chain and its capability in Raidiam's policy, whatever the token says |
+| PingFederate | Accepts the provider's attestation through the provider's chain. `RAIDIAM_RESOURCE_ID` on `up.sh` (with authoring) adds a token manager for the resource (`terraform/resource.tf`): without one a request naming it is `invalid_target`; with it the token's `aud` is the resource |
+| Raidiam | Three self-managed statements - the provider, the agent, the resource - each with its entity key. The agent's statement must carry the capabilities the job needs (`authorization_details_types`, e.g. `accounts_read`): the agent refuses a job outside them before building a request, and the resource refuses the call |
+
+```sh
+raidiam/resource.sh keys && raidiam/resource.sh csr <resource's software statement id>   # upload as rtssigning
+export RAIDIAM_PROVIDER_ID=https://host.docker.internal:8443 RAIDIAM_RESOURCE_ID=https://host.docker.internal:8446
+PF_PROFILE=raidiam SPIRE_BUNDLE_FILE=… RAIDIAM_ATTESTED_CLIENT_ID=https://host.docker.internal:8443/agent/spire-client ./up.sh
+cd spire-workload && docker compose up -d spire-oidc entity-host rs-accounts
+docker compose run --rm agent list-accounts        # or get-balance
+```
+
+The registration is still `entity-host`'s (0.7.0's token endpoint does not discover an unknown client), so
+`docker compose restart entity-host` after a restart of PingFederate.
+
 ## On Windows (Git Bash)
 
 - **Terraform's plugin handshake.** Antivirus that intercepts TLS on loopback (Avast, for one) breaks Terraform's

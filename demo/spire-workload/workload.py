@@ -58,6 +58,7 @@ import traceback
 import uuid
 
 import jwt
+import requests
 
 from client_attestation_sdk import ClientAttestation
 from client_attestation_sdk.attester import MintRequest, PingFederateProfile
@@ -367,7 +368,69 @@ def provider_entity(provider_id: str, authority: str, hosted: list) -> dict:
                 "agents": [{"entity_id": entity_id, "spiffe_id": b["spiffe_id"], "trust_domain": b["trust_domain"],
                             "published": True} for entity_id, bindings in hosted for b in bindings]}
 
-    return {"sign": sign, "vouch": vouch, "agents": agents}
+    return {"sign": sign, "vouch": vouch, "agents": agents, "attest": provider_attester(provider_id, hosted)}
+
+
+def provider_attester(provider_id: str, hosted: list):
+    """POST /attest - the provider attesting an instance of one of its agents itself, as CBA's provider does for
+    agent-r: {client_id, instance_jwk} in, {wallet_attestation, issuer} out, signed with the attester key
+    (ATTESTER_PRIVATE_FILE) that the provider's Entity Configuration publishes. PingFederate's token endpoint
+    trusts it through the provider's chain; PingFederate's own attester plays no part.
+
+    Unlike CBA's provider, which attests whatever key it is sent, this one wants the instance's workload identity
+    too: "svid", a JWT-SVID addressed to the provider. It is verified against the trust domain's live keys (the
+    binding's bundle_url, SPIRE's OIDC Discovery Provider) and its SPIFFE ID must be bound to client_id. Without the
+    attester's private key the provider serves no /attest (PingFederate's attester signs as it instead)."""
+    path = os.environ.get("ATTESTER_PRIVATE_FILE", "")
+    if not path or not os.path.exists(path):
+        return None
+    with open(path) as f:
+        attester_jwk = json.load(f)
+    attester_key = jwt.PyJWK(attester_jwk).key
+    ttl = int(os.environ.get("PROVIDER_ATTESTATION_TTL", "3600"))
+    bindings = {(entity_id, b["spiffe_id"]): b for entity_id, bs in hosted for b in bs}
+
+    def spire_keys(binding: dict) -> jwt.PyJWKSet:
+        if binding.get("bundle_url"):
+            resp = requests.get(binding["bundle_url"], timeout=10, verify=federation.pf_verify())
+            resp.raise_for_status()
+            return jwt.PyJWKSet.from_dict(resp.json())
+        return jwt.PyJWKSet.from_dict(binding["bundle"])
+
+    def attest(request: dict):
+        client_id, instance_jwk, svid = request.get("client_id"), request.get("instance_jwk"), request.get("svid")
+        if not client_id or not isinstance(instance_jwk, dict) or not svid:
+            return 400, {"error": "invalid_request", "error_description": "client_id, instance_jwk and svid are required"}
+        if any(k in instance_jwk for k in ("d", "p", "q", "k")):
+            return 400, {"error": "invalid_request", "error_description": "instance_jwk carries private key material"}
+        public = {k: v for k, v in instance_jwk.items() if k in ("kty", "crv", "x", "y", "n", "e", "kid", "alg", "use")}
+        spiffe_id = jwt.decode(svid, options={"verify_signature": False}).get("sub")
+        binding = bindings.get((client_id, spiffe_id))
+        if not binding:
+            print(f"provider: refused {spiffe_id} for {client_id}: not one of its instances", flush=True)
+            return 403, {"error": "instance_not_authorized",
+                         "error_description": f"{spiffe_id} is not an instance of {client_id}"}
+        header = jwt.get_unverified_header(svid)
+        try:
+            key = next(k for k in spire_keys(binding).keys if k.key_id == header.get("kid"))
+            claims = jwt.decode(svid, key.key, algorithms=[header["alg"]], audience=provider_id)
+        except (StopIteration, jwt.PyJWTError, requests.RequestException) as e:
+            print(f"provider: refused the SVID for {client_id}: {e!r}", flush=True)
+            return 403, {"error": "invalid_evidence", "error_description": f"the JWT-SVID did not verify: {e}"}
+        if not spiffe_id.startswith(f"spiffe://{binding['trust_domain']}/"):
+            return 403, {"error": "invalid_evidence", "error_description": "the SVID is outside the agent's trust domain"}
+        now = int(time.time())
+        attestation = jwt.encode(
+            {"iss": provider_id, "sub": client_id, "iat": now, "exp": min(now + ttl, claims["exp"] + ttl),
+             "jti": str(uuid.uuid4()), "cnf": {"jwk": public},
+             # What the provider checked, for whoever reads the attestation later.
+             "spiffe_id": spiffe_id, "trust_domain": binding["trust_domain"]},
+            attester_key, algorithm=attester_jwk.get("alg", "ES256"),
+            headers={"typ": "oauth-client-attestation+jwt", "kid": attester_jwk["kid"]})
+        print(f"provider: attested an instance of {client_id} ({spiffe_id}), key {public.get('kid') or '-'}", flush=True)
+        return 200, {"wallet_attestation": attestation, "issuer": provider_id, "client_id": client_id, "expires_at": now + ttl}
+
+    return attest
 
 
 def run_entity_host() -> None:
@@ -400,12 +463,14 @@ def run_entity_host() -> None:
                                                audience=audience, client_jwks=client_jwks,
                                                extra_claims={"spiffe_client_bindings": bindings})
 
-    others, documents, provider = {}, {}, None
+    others, documents, actions, provider = {}, {}, {}, None
     if provider_id:
         provider = provider_entity(provider_id, authority, [(entity_id, bindings)])
         others[provider_id] = provider["sign"]
         documents["/agents"] = provider["agents"]
-    entity_host.serve(entity_id, sign, others, documents)
+        if provider["attest"]:
+            actions["/attest"] = provider["attest"]
+    entity_host.serve(entity_id, sign, others, documents, actions)
     every = int(os.environ.get("REGISTER_EVERY", "600"))
     while True:
         try:

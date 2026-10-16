@@ -111,13 +111,78 @@ services:
       PROVIDER_ID: ${RAIDIAM_PROVIDER_ID-}
       PROVIDER_KEY_FILE: /provider/entity.private.jwk.json
       ATTESTER_JWKS_FILE: /provider/attester.public.jwks.json
+      # The provider's /attest (the agent-r flow): it signs attestations itself with this key.
+      ATTESTER_PRIVATE_FILE: /provider/attester.private.jwk.json
     volumes:
       - ../keys/pf-runtime-tls-ca.crt:/certs/pf-runtime-tls-ca.crt:ro
       - ../keys/raidiam/attested-client:/keys:ro
       - ../keys/raidiam/provider:/provider:ro
       - ../keys/raidiam/spire-bundle.jwks.json:/spire/spire-bundle.jwks.json:ro
 
+  # The agent-r flow (../raidiam/README.md, "The agent-r flow"): an agent that is handed only its identifier, gets
+  # this copy attested by its provider (entity-host's /attest, on SPIRE's word), reads its capabilities and finds a
+  # resource through the federation, and calls it with a token from PingFederate. Needs entity-host (with
+  # RAIDIAM_PROVIDER_ID), spire-oidc and rs-accounts up, and PingFederate started with RAIDIAM_RESOURCE_ID.
+  #   docker compose run --rm agent [list-accounts | get-balance]
+  agent:
+    build: .
+    restart: "no"
+    entrypoint: ["python", "agent.py"]
+    command: []
+    labels:
+      app: spire-client
+    environment:
+      AGENT_ID: ${ATTESTED_CLIENT_ID:-https://host.docker.internal:8443/agent/spire-client}
+      AGENT_PROVIDER: ${RAIDIAM_PROVIDER_ID:-https://host.docker.internal:8443}
+      AUTHORITY: ${AUTHORITY_HINT:-https://authority.directory.cba.raidiam.io/authority/5a27c88b-97ed-4d37-a3c8-59c66b19aa25}
+      TRUST_ANCHOR: ${TRUST_ANCHOR:-https://federation.directory.cba.raidiam.io/federation_entity/ff726945-ebd7-45e2-9869-c11227669433}
+      TRUST_ANCHOR_ENV_FILE: /fed/vars.raidiam.env
+      # The network's own resources, which Raidiam cannot reach and so does not list.
+      RESOURCE_IDS: ${RAIDIAM_RESOURCE_ID:-https://host.docker.internal:8446}
+      DIRECTORY_URL: ${DIRECTORY_URL:-https://data.directory.cba.raidiam.io}
+      AUTHORISATION_SERVER_ID: ${AUTHORISATION_SERVER_ID:-9b0983ce-781e-4f58-8620-0a752aafa054}
+      ISSUER_HOST_OVERRIDE: host.docker.internal:${PF_PORT_HTTPS:-9031}
+      SPIRE_SOCKET: /run/spire/sockets/agent.sock
+      INSTANCE_KEY_FILE: /state/instance.jwk
+      PF_CA_FILE: /certs/pf-runtime-tls-ca.crt
+    volumes:
+      - ../keys/pf-runtime-tls-ca.crt:/certs/pf-runtime-tls-ca.crt:ro
+      - ../vars.raidiam.env:/fed/vars.raidiam.env:ro
+      - spire-sockets:/run/spire/sockets
+      - agent-state:/state
+
+  # The agent-r flow's resource: an MCP server in the protected network, a federation entity of its own (its own
+  # Raidiam software statement, RAIDIAM_RESOURCE_ID; key from ../raidiam/resource.sh), protected by PingFederate.
+  #   docker compose up -d rs-accounts
+  rs-accounts:
+    build: .
+    command: ["python", "rs_accounts.py"]
+    restart: unless-stopped
+    ports:
+      - "8446:8446"
+    environment:
+      RESOURCE_ID: ${RAIDIAM_RESOURCE_ID:-https://host.docker.internal:8446}
+      RESOURCE_KEY_FILE: /keys/entity.private.jwk.json
+      AUTHORITY_HINT: ${AUTHORITY_HINT:-https://authority.directory.cba.raidiam.io/authority/5a27c88b-97ed-4d37-a3c8-59c66b19aa25}
+      TRUST_ANCHOR: ${TRUST_ANCHOR:-https://federation.directory.cba.raidiam.io/federation_entity/ff726945-ebd7-45e2-9869-c11227669433}
+      TRUST_ANCHOR_ENV_FILE: /fed/vars.raidiam.env
+      DIRECTORY_URL: ${DIRECTORY_URL:-https://data.directory.cba.raidiam.io}
+      AUTHORISATION_SERVER_ID: ${AUTHORISATION_SERVER_ID:-9b0983ce-781e-4f58-8620-0a752aafa054}
+      ISSUER_HOST_OVERRIDE: host.docker.internal:${PF_PORT_HTTPS:-9031}
+      REQUIRED_CAPABILITY: accounts_read
+      PF_CA_FILE: /certs/pf-runtime-tls-ca.crt
+      # The rig CA's certificate for host.docker.internal (the entity host's).
+      RESOURCE_TLS_CERT: /tls/entity-host-tls.crt
+      RESOURCE_TLS_KEY: /tls/entity-host-tls.key
+    volumes:
+      - ../keys/pf-runtime-tls-ca.crt:/certs/pf-runtime-tls-ca.crt:ro
+      - ../vars.raidiam.env:/fed/vars.raidiam.env:ro
+      - ../keys/raidiam/rs-accounts:/keys:ro
+      - ../keys/raidiam/attested-client/entity-host-tls.crt:/tls/entity-host-tls.crt:ro
+      - ../keys/raidiam/attested-client/entity-host-tls.key:/tls/entity-host-tls.key:ro
+
 volumes:
+  agent-state:
   spire-sockets:
     external: true
     name: ${SPIRE_SOCKETS_VOLUME:-spire_spire-agent-sockets}

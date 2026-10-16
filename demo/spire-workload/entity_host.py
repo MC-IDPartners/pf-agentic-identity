@@ -52,16 +52,18 @@ def _self_signed(host: str):
     return cert_path, key_path
 
 
-def serve(entity_id: str, sign_entity_configuration, others: dict = None, documents: dict = None) -> ThreadingHTTPServer:
+def serve(entity_id: str, sign_entity_configuration, others: dict = None, documents: dict = None,
+          actions: dict = None) -> ThreadingHTTPServer:
     """Starts serving in a daemon thread; sign_entity_configuration() returns a freshly signed JWT.
 
     others: {entity_id: sign()} for more entities on the same host and port, such as the agent provider beside its
-    agents. documents: {path: get()} for plain JSON documents, such as the provider's /agents listing."""
+    agents. documents: {path: get()} for plain JSON documents, such as the provider's /agents listing. actions:
+    {path: handle(request JSON) -> (status, response JSON)} for POSTs, such as the provider's /attest."""
     parts = urlsplit(entity_id)
     port = int(os.environ.get("ENTITY_LISTEN_PORT") or parts.port or 443)
     signers = {urlsplit(e).path.rstrip("/") + WELL_KNOWN: sign
                for e, sign in {entity_id: sign_entity_configuration, **(others or {})}.items()}
-    documents = documents or {}
+    documents, actions = documents or {}, actions or {}
 
     class Handler(BaseHTTPRequestHandler):
         def do_GET(self):
@@ -80,6 +82,24 @@ def serve(entity_id: str, sign_entity_configuration, others: dict = None, docume
             self.end_headers()
             self.wfile.write(body)
 
+        def do_POST(self):
+            path = self.path.split("?")[0]
+            if path not in actions:
+                self.send_error(404)
+                return
+            try:
+                request = json.loads(self.rfile.read(int(self.headers.get("Content-Length") or 0)) or b"{}")
+                status, response = actions[path](request)
+            except ValueError as e:
+                status, response = 400, {"error": "invalid_request", "error_description": str(e)}
+            body = json.dumps(response).encode()
+            self.send_response(status)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Cache-Control", "no-store")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
         def log_message(self, fmt, *args):
             print(f"entity host: {self.address_string()} {fmt % args}", flush=True)
 
@@ -92,6 +112,6 @@ def serve(entity_id: str, sign_entity_configuration, others: dict = None, docume
         context.load_cert_chain(*_self_signed(parts.hostname))
     server.socket = context.wrap_socket(server.socket, server_side=True)
     threading.Thread(target=server.serve_forever, daemon=True).start()
-    for path in [*signers, *documents]:
+    for path in [*signers, *documents, *actions]:
         print(f"entity host: serving https://{parts.hostname}:{port}{path} (listening on :{port})", flush=True)
     return server

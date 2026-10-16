@@ -46,6 +46,8 @@
 #   RAIDIAM_ATTESTED_CLIENT_ID  raidiam: the Entity Identifier of a Raidiam-registered client whose own Entity
 #                   Configuration carries its spiffe_client_bindings (spire-workload's entity-host serves it): the
 #                   attester then takes SPIFFE bindings from it first. See raidiam/README.md.
+#   RAIDIAM_RESOURCE_ID  raidiam: the Entity Identifier of the agent-r flow's resource server (spire-workload's
+#                   rs-accounts); PingFederate gets a token manager answering RFC 8707 requests that name it.
 #   RAIDIAM_PROVIDER_ID  raidiam, with RAIDIAM_ATTESTED_CLIENT_ID: the Entity Identifier of the agent provider
 #                   (raidiam/provider.sh), whose Entity Configuration publishes the attester's key: the attester signs
 #                   as it, and the token endpoint trusts it through the federation. See raidiam/README.md.
@@ -141,6 +143,8 @@ if [[ "${SKIP_AUTHOR:-0}" != 1 ]]; then
     else
       echo "NOTE: SPIRE_BUNDLE_FILE unset - no attestation client; the federation flows still work" >&2
     fi
+    # The agent-r flow's resource server: a token manager answering requests that name it (terraform/resource.tf).
+    [[ -z "${RAIDIAM_RESOURCE_ID:-}" ]] || export TF_VAR_rs_accounts_resource="$RAIDIAM_RESOURCE_ID"
   fi
   "$HERE/author.sh"
   # One resource at a time: in parallel, PingFederate has twice read back its server settings as the defaults straight
