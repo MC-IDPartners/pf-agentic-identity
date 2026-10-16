@@ -115,9 +115,13 @@ new keys and new CSRs.
 ### 9. PingFederate's own entity
 
 - If PingFederate's issuer is private too, nobody outside can resolve it, or read its discovery document.
-- Its Entity Configuration's `authority_hints` names the trust anchor, but Raidiam vouches for it through the CBA
-  authority - the anchor answers *unknown entity* - so its chain does not resolve for anyone. Point
-  `OIDF_FEDERATION_TRUST_ANCHORS` (its superior) at the authority. Not yet tested.
+- Its `authority_hints` must name the CBA authority, which vouches for its issuer, not the anchor, which does not
+  (`OIDF_FEDERATION_TRUST_ANCHORS` in `vars.raidiam.env`; client chains are unaffected - tested with every flow).
+- It signs its Entity Configuration with PingFederate's current OAuth signing key, which PingFederate generates and
+  rotates itself, so Raidiam has never certified it: Raidiam's resolver refuses the chain (*subordinate statement
+  ... does not contain the key used to sign the subject entity's Entity Configuration*). The fix is static OAuth/OIDC
+  signing keys - a key whose CSR Raidiam certified, imported into PingFederate - which makes rotation a manual,
+  certified step. Not yet done.
 
 ### 10. DPoP
 
