@@ -40,8 +40,12 @@ returns a statement for each). Raidiam most likely cannot list them because it c
 learn their entity types (inferred).
 
 - **Agent-to-agent discovery through Raidiam does not work:** another agent cannot find yours there.
-- **Resources are fine:** `/list?entity_type=oauth_resource` is built from the ApiResources on each authorisation
-  server's record, not from the resources themselves, so a private resource is listed once its ApiResource exists.
+- **Resources are different:** a resource is a software statement whose `ClientId` is the resource identifier, plus
+  an ApiResource on its authorisation server's record whose `resource` is that same identifier. Raidiam joins the two
+  by identifier: the authority's statement about the resource carries the software statement's keys and policy, and
+  the ApiResource's metadata as `oauth_resource` policy - the API family's schema turned into policy (its enums become
+  `subset_of`, its required members `essential`). The authority vouches for a private resource without reaching it.
+  Whether `/list?entity_type=oauth_resource` lists a private one is not yet confirmed.
 
 ### 3. Raidiam cannot push anything
 
@@ -72,10 +76,9 @@ So an internal entity host - the agent provider, `entity-host` here - is needed 
 
 ### 5. Shared organisation keys
 
-Raidiam's statement about each resource, and about the provider, lists the whole organisation's key set (16 keys for
-CBA-123, other teams' among them - CBA's agent provider's, for one). A resource with no software statement has
-nothing but that set. So any holder of an organisation key can sign an Entity Configuration Raidiam will vouch for
-under any of those entity identifiers.
+Raidiam's statement about an entity lists the whole organisation's key set (16 keys for CBA-123, other teams' among
+them - CBA's agent provider's, for one) besides the entity's own certified keys. So any holder of an organisation key
+can sign an Entity Configuration Raidiam will vouch for under any of the organisation's entity identifiers.
 
 Raise this with Raidiam and the bank's security team: per-entity keys, or at least per-team key sets, would limit
 the blast radius.
@@ -156,4 +159,5 @@ the anchor's Entity Configuration, checked out of band.
   policy applied.
 - The agent provider attests instances on SPIRE's word, and PingFederate trusts its attestations through the
   provider's chain.
-- A resource is discoverable through Raidiam's `/list` once it has an ApiResource, without Raidiam reaching it.
+- A resource is vouched for by Raidiam - a software statement with its identifier as `ClientId`, plus an ApiResource
+  - without Raidiam reaching it.
