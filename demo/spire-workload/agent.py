@@ -197,7 +197,7 @@ def main() -> None:
     say("token", f"client_id {at.get('client_id')}, aud {at.get('aud')}, expires {time.ctime(at['exp'])}")
 
     # 6. The call.
-    endpoint = chosen.get("endpoint") or chosen["resource"].rstrip("/") + "/mcp"
+    endpoint = (chosen.get("endpoints") or [chosen["resource"].rstrip("/") + "/mcp"])[0]
     result = asyncio.run(call_mcp(endpoint, access_token, job["tool"], job["args"]))
     say("call", f"{job['tool']} at {endpoint}:")
     print(json.dumps(result, indent=2), flush=True)

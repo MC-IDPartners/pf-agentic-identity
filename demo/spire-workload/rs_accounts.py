@@ -7,9 +7,9 @@ It is a federation entity of its own (its own Raidiam software statement, RESOUR
                                       PingFederate as its authorisation server, the capabilities it serves
                                       (authorization_details_types_supported) and "interface": "mcp"
   /.well-known/oauth-protected-resource   the same, as RFC 9728 protected resource metadata
-  /mcp                                the MCP endpoint (streamable HTTP), tools list_accounts and get_balance
+  /mcp/v1                             the MCP endpoint (streamable HTTP), tools list_accounts and get_balance
 
-A call to /mcp needs a bearer token, and passes three checks:
+A call to /mcp/v1 needs a bearer token, and passes three checks:
   1. the token: signed by the authorisation server it names (its JWKS, from its discovery document), meant for
      this resource (aud), unexpired, an access token (typ at+jwt);
   2. the caller is a federation member now: its client_id resolved through Raidiam's chain to the pinned anchor
@@ -42,6 +42,7 @@ RESOURCE_ID = os.environ["RESOURCE_ID"].rstrip("/")
 RESOURCE_NAME = os.environ.get("RESOURCE_NAME", "Rig Business Banking Accounts")
 AUTHORITY = os.environ["AUTHORITY_HINT"]
 CAPABILITY = os.environ.get("REQUIRED_CAPABILITY", "accounts_read")
+MCP_PATH = "/mcp/v1"
 CA = fedresolve.ca_bundle(os.environ.get("PF_CA_FILE"))
 RESOLVER = fedresolve.Resolver(os.environ["TRUST_ANCHOR"], fedresolve.pinned_anchor_jwks(), CA)
 
@@ -59,16 +60,21 @@ PRIVATE, PUBLIC = federation.load_or_create_key(os.environ["RESOURCE_KEY_FILE"])
 
 def resource_metadata() -> dict:
     return {
+        # The shape of CBA's resources (their ApiMetadata on the authorisation server's Raidiam record).
         "resource": RESOURCE_ID,
         "resource_name": RESOURCE_NAME,
-        "resource_documentation": RESOURCE_ID + "/",
+        "description": "Lists the business accounts visible to the calling agent, and reports balances and "
+                       "available funds on each account.",
+        "keywords": ["business accounts", "balances"],
+        "resource_documentation": RESOURCE_ID + "/.well-known/oauth-protected-resource",
         "authorization_servers": [ISSUER],
         "scopes_supported": ["accounts.read"],
         "authorization_details_types_supported": ["accounts_read"],
         "bearer_methods_supported": ["header"],
         "dpop_bound_access_tokens_required": False,
         "https://cba.com.au/federation/interface": "mcp",
-        "endpoint": RESOURCE_ID + "/mcp",
+        "https://cba.com.au/federation/division": "Rig",
+        "endpoints": [RESOURCE_ID + MCP_PATH],
     }
 
 
@@ -156,7 +162,7 @@ def check(authorization: str) -> dict:
 
 # DNS rebinding protection stays on: requests must name the resource's own host (or RESOURCE_ALLOWED_HOSTS).
 ALLOWED_HOSTS = [urlsplit(RESOURCE_ID).netloc, *filter(None, os.environ.get("RESOURCE_ALLOWED_HOSTS", "").split(","))]
-mcp = FastMCP(RESOURCE_NAME, stateless_http=True, json_response=True,
+mcp = FastMCP(RESOURCE_NAME, stateless_http=True, json_response=True, streamable_http_path=MCP_PATH,
               transport_security=TransportSecuritySettings(enable_dns_rebinding_protection=True,
                                                            allowed_hosts=ALLOWED_HOSTS, allowed_origins=[]))
 
@@ -194,7 +200,7 @@ async def protected_resource(request: Request) -> Response:
 
 
 class BearerGate:
-    """The checks in front of /mcp; the caller's identity reaches the tools through a context variable."""
+    """The checks in front of /mcp/v1; the caller's identity reaches the tools through a context variable."""
 
     def __init__(self, app):
         self.app = app
