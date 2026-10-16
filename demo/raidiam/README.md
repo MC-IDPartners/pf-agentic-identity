@@ -239,7 +239,7 @@ sequenceDiagram
 | `entity-host` `/attest` | The provider attests a copy itself, signing with its attester key (`keys/raidiam/provider/attester.*`), as CBA's provider does. It wants the copy's JWT-SVID as well, checked against SPIRE's live keys and the agent's bindings - CBA's provider attests whatever key it is sent |
 | `rs-accounts` (`rs_accounts.py`) | An MCP server (tools `list_accounts`, `get_balance`) and a federation entity: `oauth_resource` metadata naming PingFederate. It checks the token, then the caller's chain and its capability in Raidiam's policy, whatever the token says |
 | PingFederate | Accepts the provider's attestation through the provider's chain. `RAIDIAM_RESOURCE_ID` on `up.sh` (with authoring) adds a token manager for the resource (`terraform/resource.tf`): without one a request naming it is `invalid_target`; with it the token's `aud` is the resource |
-| Raidiam | Three self-managed statements - the provider, the agent, the resource - each with its entity key. The resource is also an ApiResource on PingFederate's authorisation server record, under an API family of its own (a CBA family's schema pins its own issuer), with `resource` byte-identical to the resource's `ClientId`: Raidiam joins them by that identifier. The agent's statement must carry the capabilities the job needs (`authorization_details_types`, e.g. `accounts_read`): the agent refuses a job outside them before building a request, and the resource refuses the call |
+| Raidiam | Three self-managed statements - the provider, the agent, the resource - each with its entity key. The resource is also an ApiResource on PingFederate's authorisation server record, under an API family of its own (a CBA family's schema pins its own issuer), with `resource` byte-identical to the resource's `ClientId`: Raidiam joins them by that identifier. The agent's capabilities (`authorization_details_types`) come from its **agentic roles** (authority claims, domain `CBA-Global`), not from fields on the statement: `cba.agentic.member` plus a capability role - `cba.agentic.servicing.assistant` grants `accounts_read` and `openid_credential`. `cba.accounts.reader` alone grants none; it only adds a trust mark. The agent refuses a job outside its capabilities before building a request, and the resource refuses the call |
 
 ```sh
 raidiam/resource.sh keys && raidiam/resource.sh csr <resource's software statement id>   # upload as rtssigning
@@ -248,6 +248,10 @@ PF_PROFILE=raidiam SPIRE_BUNDLE_FILE=… RAIDIAM_ATTESTED_CLIENT_ID=https://host
 cd spire-workload && docker compose up -d spire-oidc entity-host rs-accounts
 docker compose run --rm agent list-accounts        # or get-balance
 ```
+
+`python harness.py` runs the flow end to end and checks every step, with the negatives (another workload refused
+at `/attest`, a job outside the envelope refused, a call with no token refused); `--report` writes the result as
+JSON.
 
 The registration is still `entity-host`'s (0.7.0's token endpoint does not discover an unknown client), so
 `docker compose restart entity-host` after a restart of PingFederate.

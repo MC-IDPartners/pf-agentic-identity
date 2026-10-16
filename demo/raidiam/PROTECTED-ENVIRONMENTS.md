@@ -45,7 +45,9 @@ learn their entity types (inferred).
   by identifier: the authority's statement about the resource carries the software statement's keys and policy, and
   the ApiResource's metadata as `oauth_resource` policy - the API family's schema turned into policy (its enums become
   `subset_of`, its required members `essential`). The authority vouches for a private resource without reaching it.
-  Whether `/list?entity_type=oauth_resource` lists a private one is not yet confirmed.
+  But `/list?entity_type=oauth_resource` does not list it: hours after the authority vouched for this rig's resource,
+  the listing still held only CBA's 18 public ones. An agent inside the network has to know its private resources
+  (`RESOURCE_IDS`) - it still verifies each through Raidiam's chain.
 
 ### 3. Raidiam cannot push anything
 
