@@ -120,8 +120,12 @@ new keys and new CSRs.
 - It signs its Entity Configuration with PingFederate's current OAuth signing key, which PingFederate generates and
   rotates itself, so Raidiam has never certified it: Raidiam's resolver refuses the chain (*subordinate statement
   ... does not contain the key used to sign the subject entity's Entity Configuration*). The fix is static OAuth/OIDC
-  signing keys - a key whose CSR Raidiam certified, imported into PingFederate - which makes rotation a manual,
-  certified step. Not yet done.
+  signing keys - a key Raidiam certified, imported into PingFederate - which makes rotation a manual, certified step.
+  Done here (`raidiam/pf-signing.sh`, `terraform/signing-keys.tf`): an organisation-level `server_signing`
+  certificate, as CBA's authorisation servers hold theirs, and Raidiam's `/resolve` now accepts PingFederate's chain.
+  Two traps: Raidiam's kid is the certificate's `x5t#S256`, and PingFederate publishes the key once more per
+  algorithm under `<kid>_RS256`, which is the one the federation module signs with - so the RS256 key id
+  (`rsa_algorithm_active_key_ids`) must be Raidiam's kid itself.
 
 ### 10. DPoP
 
