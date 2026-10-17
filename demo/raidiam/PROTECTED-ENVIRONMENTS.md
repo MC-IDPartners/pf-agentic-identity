@@ -13,7 +13,8 @@ either observed here or follows directly from it. Where something is inferred ra
 | Your entities calling Raidiam (fetch, list, keystore) | Works |
 | Internal parties resolving each other (PingFederate, agent, resource) | Works, with chains resolved locally - as PingFederate does, and the agent and resource do with `spire-workload/fedresolve.py` |
 | Your agent calling an external authorisation server or API | Only with the trust chain carried in the request |
-| An external party, or Raidiam, discovering or resolving your entities | Does not work |
+| Raidiam listing your entities, and vouching for them (`/list`, `/fetch`) | Works |
+| An external party, or Raidiam, resolving your entities (`/resolve`, the listing's status) | Does not work |
 | Raidiam telling you about a withdrawal or a change | Does not work - poll instead |
 
 ## Hard roadblocks
@@ -33,21 +34,21 @@ attested client, the attestation can carry the attester's chain the same way.
 **Limit:** every outbound call must carry its chain, and a party that insists on discovering you itself cannot be
 used.
 
-### 2. Self-hosted entities are missing from Raidiam's `/list`
+### 2. Raidiam lists private entities, but cannot check them
 
-The provider and the agent are absent from the authority's `/list`, although Raidiam vouches for both (its `/fetch`
-returns a statement for each). Raidiam most likely cannot list them because it cannot fetch their configurations to
-learn their entity types (inferred).
+Raidiam's `/list` does name the rig's private entities - the agents under `openid_relying_party`, an agent other
+agents call under `oauth_resource` once its ApiResource is processed - and its `/fetch` returns its signed statement
+about each without reaching them. (Earlier in the rig's life they were missing from `/list`, apparently until their
+roles and ApiResources were in; the reason was not that Raidiam could not reach them.)
 
-- **Agent-to-agent discovery through Raidiam does not work:** another agent cannot find yours there.
-- **Resources are different:** a resource is a software statement whose `ClientId` is the resource identifier, plus
-  an ApiResource on its authorisation server's record whose `resource` is that same identifier. Raidiam joins the two
-  by identifier: the authority's statement about the resource carries the software statement's keys and policy, and
-  the ApiResource's metadata as `oauth_resource` policy - the API family's schema turned into policy (its enums become
-  `subset_of`, its required members `essential`). The authority vouches for a private resource without reaching it.
-  But `/list?entity_type=oauth_resource` does not list it: hours after the authority vouched for this rig's resource,
-  the listing still held only CBA's 18 public ones. An agent inside the network has to know its private resources
-  (`RESOURCE_IDS`) - it still verifies each through Raidiam's chain.
+What fails is everything that fetches the entity itself: Raidiam's `/resolve` (404), and the status a listing shows
+for an entry - *entity configuration: … Max retries exceeded … /agent/payments-agent/.well-known/openid-federation
+(ConnectTimeoutError)*: from Raidiam's network the internal name leads nowhere.
+
+So discovery and trust work from outside the network - an identifier from `/list`, Raidiam's statement from
+`/fetch` - and resolution has to happen inside it, by a party that can reach the entity's own configuration: the
+rig's agents and resources resolve chains themselves (`spire-workload/fedresolve.py`), as PingFederate does.
+Expect the listing's status column to show these errors for every private entity; they are not faults.
 
 ### 3. Raidiam cannot push anything
 
