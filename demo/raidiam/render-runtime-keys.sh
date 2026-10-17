@@ -17,7 +17,7 @@ for f in attester-signing.public.jwks.json "bridge-$CLIENT.private.jwk.json"; do
 done
 mkdir -p "$KEYS/runtime"; chmod 700 "$KEYS/runtime"
 ( umask 177
-  ISSUER="$ISSUER" CLIENT="$CLIENT" KEYS="$KEYS" ATTESTED="${RAIDIAM_ATTESTED_CLIENT_ID:-}" PROVIDER="${RAIDIAM_PROVIDER_ID:-}" node -e '
+  ISSUER="$ISSUER" CLIENT="$CLIENT" KEYS="$KEYS" ATTESTED="${RAIDIAM_ATTESTED_CLIENT_ID:-}" PROVIDER="${RAIDIAM_PROVIDER_ID:-}" HOSTED="${RAIDIAM_HOSTED_AGENTS:-}" node -e '
     const fs = require("fs"), k = process.env.KEYS, iss = process.env.ISSUER.replace(/\/+$/, "");
     const read = f => JSON.parse(fs.readFileSync(`${k}/${f}`, "utf8"));
     fs.writeFileSync(`${k}/runtime/mock-attesters.json`, JSON.stringify({ [iss]: read("attester-signing.public.jwks.json") }));
@@ -26,6 +26,11 @@ mkdir -p "$KEYS/runtime"; chmod 700 "$KEYS/runtime"
     // come from the agent provider (provider.sh) when RAIDIAM_PROVIDER_ID names one, else from PingFederate.
     const provider = process.env.PROVIDER.replace(/\/+$/, "");
     if (process.env.ATTESTED) bridges[process.env.ATTESTED] = { jwk: read("attested-client/bridge.private.jwk.json"), attesters: [provider || iss] };
+    // The provider sub-agents (RAIDIAM_HOSTED_AGENTS): <provider>/agent/<name>, their keys under agents/<name>/.
+    for (const name of process.env.HOSTED.split(/[\s,]+/).filter(Boolean)) {
+      if (!provider) throw new Error("RAIDIAM_HOSTED_AGENTS needs RAIDIAM_PROVIDER_ID");
+      bridges[`${provider}/agent/${name}`] = { jwk: read(`agents/${name}/bridge.private.jwk.json`), attesters: [provider] };
+    }
     fs.writeFileSync(`${k}/runtime/bridge-signing-keys.json`, JSON.stringify(bridges));
   ' )
 #   truststore.p12             the JDK's CAs plus the rig's runtime CA, as PingFederate's JVM default trust store

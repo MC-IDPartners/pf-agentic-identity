@@ -82,8 +82,8 @@ services:
     build: .
     command: ["python", "workload.py", "entity-host"]
     restart: unless-stopped
-    ports:
-      - "8443:8443"
+    # Not published: gateway-provider (Kong) is https://host.docker.internal:8443 and passes everything but the agents'
+    # MCP through to here.
     environment:
       DIRECTORY_URL: ${DIRECTORY_URL:-https://data.directory.cba.raidiam.io}
       AUTHORISATION_SERVER_ID: ${AUTHORISATION_SERVER_ID:-9b0983ce-781e-4f58-8620-0a752aafa054}
@@ -113,10 +113,15 @@ services:
       ATTESTER_JWKS_FILE: /provider/attester.public.jwks.json
       # The provider's /attest (the agent-r flow): it signs attestations itself with this key.
       ATTESTER_PRIVATE_FILE: /provider/attester.private.jwk.json
+      # Agents calling agents (../gateway/README.md): the provider's sub-agents, <provider>/agent/<name>, each a client
+      # and a resource other agents call; keys under ../keys/raidiam/agents/<name>/ (AGENT=<name> attested-client.sh).
+      HOSTED_AGENTS: ${RAIDIAM_HOSTED_AGENTS-accounts-agent payments-agent}
+      AGENT_CAPABILITIES: accounts-agent=accounts_read,payments-agent=payment_initiation
     volumes:
       - ../keys/pf-runtime-tls-ca.crt:/certs/pf-runtime-tls-ca.crt:ro
       - ../keys/raidiam/attested-client:/keys:ro
       - ../keys/raidiam/provider:/provider:ro
+      - ../keys/raidiam/agents:/agents:ro
       - ../keys/raidiam/spire-bundle.jwks.json:/spire/spire-bundle.jwks.json:ro
 
   # The agent-r flow (../raidiam/README.md, "The agent-r flow"): an agent that is handed only its identifier, gets
@@ -181,6 +186,108 @@ services:
       - ../vars.raidiam.env:/fed/vars.raidiam.env:ro
       - ../keys/raidiam/rs-accounts:/keys:ro
 
+  # rs-payments: the same server, RESOURCE_KIND=payments (pay_invoice, payment_initiation), behind gateway-payments at
+  # https://host.docker.internal:8447. Its own Raidiam software statement and ApiResource; keys RESOURCE=rs-payments.
+  rs-payments:
+    build: .
+    command: ["python", "rs_accounts.py"]
+    restart: unless-stopped
+    environment:
+      RESOURCE_KIND: payments
+      RESOURCE_ID: ${RAIDIAM_PAYMENTS_RESOURCE_ID:-https://host.docker.internal:8447}
+      RESOURCE_KEY_FILE: /keys/entity.private.jwk.json
+      AUTHORITY_HINT: ${AUTHORITY_HINT:-https://authority.directory.cba.raidiam.io/authority/5a27c88b-97ed-4d37-a3c8-59c66b19aa25}
+      TRUST_ANCHOR: ${TRUST_ANCHOR:-https://federation.directory.cba.raidiam.io/federation_entity/ff726945-ebd7-45e2-9869-c11227669433}
+      TRUST_ANCHOR_ENV_FILE: /fed/vars.raidiam.env
+      DIRECTORY_URL: ${DIRECTORY_URL:-https://data.directory.cba.raidiam.io}
+      AUTHORISATION_SERVER_ID: ${AUTHORISATION_SERVER_ID:-9b0983ce-781e-4f58-8620-0a752aafa054}
+      ISSUER_HOST_OVERRIDE: host.docker.internal:${PF_PORT_HTTPS:-9031}
+      PF_CA_FILE: /certs/pf-runtime-tls-ca.crt
+      RESOURCE_LISTEN_PORT: "8446"
+      RESOURCE_ALLOWED_HOSTS: rs-payments:8446,rs-payments
+    volumes:
+      - ../keys/pf-runtime-tls-ca.crt:/certs/pf-runtime-tls-ca.crt:ro
+      - ../vars.raidiam.env:/fed/vars.raidiam.env:ro
+      - ../keys/raidiam/rs-payments:/keys:ro
+
+  # The provider's sub-agents (sub_agent.py): MCP servers other agents call, behind gateway-provider at
+  # <provider>/agent/<name>/mcp/v1. Each exchanges its caller's token (RFC 8693) for one at its resource and calls
+  # it. Each runs under its own SPIRE identity: spiffe://example.org/<name> <- docker:label:app:<name>.
+  accounts-agent:
+    build: .
+    command: ["python", "sub_agent.py"]
+    restart: unless-stopped
+    labels:
+      app: accounts-agent
+    environment: &sub-agent-env
+      AGENT_KIND: accounts
+      AGENT_ID: ${RAIDIAM_PROVIDER_ID:-https://host.docker.internal:8443}/agent/accounts-agent
+      AGENT_PROVIDER: ${RAIDIAM_PROVIDER_ID:-https://host.docker.internal:8443}
+      DOWNSTREAM_RESOURCE: ${RAIDIAM_RESOURCE_ID:-https://host.docker.internal:8446}
+      AUTHORISATION_SERVER: ${PF_BASE_URL:-https://bottle-platonic-parted.ngrok-free.dev}
+      ISSUER_HOST_OVERRIDE: host.docker.internal:${PF_PORT_HTTPS:-9031}
+      PF_CA_FILE: /certs/pf-runtime-tls-ca.crt
+      SPIRE_SOCKET: /run/spire/sockets/agent.sock
+      INSTANCE_KEY_FILE: /state/instance.jwk
+      LISTEN_PORT: "8090"
+      AGENT_ALLOWED_HOSTS: accounts-agent:8090,accounts-agent
+    volumes:
+      - ../keys/pf-runtime-tls-ca.crt:/certs/pf-runtime-tls-ca.crt:ro
+      - spire-sockets:/run/spire/sockets
+      - accounts-agent-state:/state
+
+  payments-agent:
+    build: .
+    command: ["python", "sub_agent.py"]
+    restart: unless-stopped
+    labels:
+      app: payments-agent
+    environment:
+      <<: *sub-agent-env
+      AGENT_KIND: payments
+      AGENT_ID: ${RAIDIAM_PROVIDER_ID:-https://host.docker.internal:8443}/agent/payments-agent
+      DOWNSTREAM_RESOURCE: ${RAIDIAM_PAYMENTS_RESOURCE_ID:-https://host.docker.internal:8447}
+      AGENT_ALLOWED_HOSTS: payments-agent:8090,payments-agent
+    volumes:
+      - ../keys/pf-runtime-tls-ca.crt:/certs/pf-runtime-tls-ca.crt:ro
+      - spire-sockets:/run/spire/sockets
+      - payments-agent-state:/state
+
+  # Kong as the provider's edge, https://host.docker.internal:8443: the sub-agents' MCP through coaz-pep, everything
+  # else (Entity Configurations, /attest, /agents) to entity-host.
+  gateway-provider:
+    build: ../gateway/kong
+    restart: unless-stopped
+    ports:
+      - "8443:8443"
+    environment:
+      KONG_TEMPLATE: provider.yml.template
+      KONG_PROXY_LISTEN: "0.0.0.0:8443 ssl"
+      PROVIDER_ID: ${RAIDIAM_PROVIDER_ID:-https://host.docker.internal:8443}
+      PROVIDER_URL: https://entity-host:8443
+      COAZ_URL: http://coaz-pep:9192
+    volumes:
+      - ../keys/raidiam/attested-client/entity-host-tls.crt:/tls/tls.crt:ro
+      - ../keys/raidiam/attested-client/entity-host-tls.key:/tls/tls.key:ro
+    depends_on: [entity-host, coaz-pep]
+
+  # Kong in front of rs-payments, at https://host.docker.internal:8447.
+  gateway-payments:
+    build: ../gateway/kong
+    restart: unless-stopped
+    ports:
+      - "8447:8447"
+    environment:
+      KONG_PROXY_LISTEN: "0.0.0.0:8447 ssl"
+      RESOURCE_ID: ${RAIDIAM_PAYMENTS_RESOURCE_ID:-https://host.docker.internal:8447}
+      RESOURCE_URL: http://rs-payments:8446
+      RESOURCE_LABEL: rs-payments MCP
+      COAZ_URL: http://coaz-pep:9192
+    volumes:
+      - ../keys/raidiam/attested-client/entity-host-tls.crt:/tls/tls.crt:ro
+      - ../keys/raidiam/attested-client/entity-host-tls.key:/tls/tls.key:ro
+    depends_on: [rs-payments, coaz-pep]
+
   # The gateway in front of rs-accounts (../gateway/README.md): Kong, at the resource's identifier, asks coaz-pep about
   # every MCP request (its HTTP check API); only then does a call reach the resource.
   gateway:
@@ -233,6 +340,8 @@ services:
 
 volumes:
   agent-state:
+  accounts-agent-state:
+  payments-agent-state:
   spire-sockets:
     external: true
     name: ${SPIRE_SOCKETS_VOLUME:-spire_spire-agent-sockets}

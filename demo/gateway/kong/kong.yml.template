@@ -1,4 +1,5 @@
-# Kong, DB-less, in front of the rig's MCP resource (spire-workload's rs-accounts), at its identifier.
+# Kong, DB-less, in front of one of the rig's MCP resources (spire-workload's rs-accounts or rs-payments), at its
+# identifier.
 #
 #   /.well-known/*  the resource's Entity Configuration and protected resource metadata, passed through
 #   /mcp*           every request asks coaz-pep first (plugin coaz-pep -> POST /v1/mcp/check): the token's signature
@@ -25,12 +26,14 @@ services:
         coaz_url: __COAZ_URL__
         # The PEP's settings for this route (coaz-pep's pepConfig).
         route_config:
-          pep_label: "PEP (rs-accounts MCP)"
+          pep_label: "PEP (__RESOURCE_LABEL__)"
           style: "mcp"
           require_token: "true"
           # Tokens are bound to the agent instance's key (cnf.jkt): every call carries a DPoP proof from it.
           require_dpop: "true"
           dpop_htu_base: "__RESOURCE_ID__"
+          # The audience this route's tokens must carry: this resource.
+          token_audience: "__RESOURCE_ID__"
           # The agent acts as itself (client_credentials): there is no end user behind it.
           require_user_login: "false"
           # The PEP has verified the audience; the borrowed banking policy pins another, so it isn't sent.

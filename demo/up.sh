@@ -48,6 +48,10 @@
 #                   attester then takes SPIFFE bindings from it first. See raidiam/README.md.
 #   RAIDIAM_RESOURCE_ID  raidiam: the Entity Identifier of the agent-r flow's resource server (spire-workload's
 #                   rs-accounts); PingFederate gets a token manager answering RFC 8707 requests that name it.
+#   RAIDIAM_PAYMENTS_RESOURCE_ID  raidiam: rs-payments' Entity Identifier (agents calling agents).
+#   RAIDIAM_HOSTED_AGENTS  raidiam, with RAIDIAM_PROVIDER_ID: the provider's sub-agents, e.g. "accounts-agent
+#                   payments-agent" (<provider>/agent/<name>): token managers for them, the token exchange that lets
+#                   them call on for an agent, and their bridge keys. See ../gateway/README.md.
 #   RAIDIAM_PROVIDER_ID  raidiam, with RAIDIAM_ATTESTED_CLIENT_ID: the Entity Identifier of the agent provider
 #                   (raidiam/provider.sh), whose Entity Configuration publishes the attester's key: the attester signs
 #                   as it, and the token endpoint trusts it through the federation. See raidiam/README.md.
@@ -145,6 +149,14 @@ if [[ "${SKIP_AUTHOR:-0}" != 1 ]]; then
     fi
     # The agent-r flow's resource server: a token manager answering requests that name it (terraform/resource.tf).
     [[ -z "${RAIDIAM_RESOURCE_ID:-}" ]] || export TF_VAR_rs_accounts_resource="$RAIDIAM_RESOURCE_ID"
+    # Agents calling agents: rs-payments, and the provider's sub-agents as resources (and delegated callers).
+    [[ -z "${RAIDIAM_PAYMENTS_RESOURCE_ID:-}" ]] || export TF_VAR_rs_payments_resource="$RAIDIAM_PAYMENTS_RESOURCE_ID"
+    for agent in ${RAIDIAM_HOSTED_AGENTS:-}; do
+      case "$agent" in
+        accounts-agent) export TF_VAR_accounts_agent_resource="${RAIDIAM_PROVIDER_ID:?RAIDIAM_HOSTED_AGENTS needs RAIDIAM_PROVIDER_ID}/agent/$agent" ;;
+        payments-agent) export TF_VAR_payments_agent_resource="${RAIDIAM_PROVIDER_ID:?RAIDIAM_HOSTED_AGENTS needs RAIDIAM_PROVIDER_ID}/agent/$agent" ;;
+      esac
+    done
   fi
   "$HERE/author.sh"
   # One resource at a time: in parallel, PingFederate has twice read back its server settings as the defaults straight

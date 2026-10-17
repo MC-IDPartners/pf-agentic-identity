@@ -25,6 +25,7 @@ import contextvars
 import json
 import os
 import time
+import uuid
 from urllib.parse import urlsplit
 
 import jwt
@@ -39,9 +40,20 @@ import federation
 import fedresolve
 
 RESOURCE_ID = os.environ["RESOURCE_ID"].rstrip("/")
-RESOURCE_NAME = os.environ.get("RESOURCE_NAME", "Rig Business Banking Accounts")
+# RESOURCE_KIND: which resource this server is - "accounts" (rs-accounts) or "payments" (rs-payments).
+KIND = os.environ.get("RESOURCE_KIND", "accounts")
+PROFILE = {
+    "accounts": {"name": "Rig Business Banking Accounts", "capability": "accounts_read", "scopes": ["accounts.read"],
+                 "description": "Lists the business accounts visible to the calling agent, and reports balances and "
+                                "available funds on each account.", "keywords": ["business accounts", "balances"]},
+    "payments": {"name": "POC Business Banking Payments", "capability": "payment_initiation",
+                 "scopes": ["payments.initiate"], "keywords": ["supplier payment", "payment initiation"],
+                 "description": "Initiates supplier payments from a business account within the policy limits."},
+}[KIND]
+RESOURCE_NAME = os.environ.get("RESOURCE_NAME", PROFILE["name"])
 AUTHORITY = os.environ["AUTHORITY_HINT"]
-CAPABILITY = os.environ.get("REQUIRED_CAPABILITY", "accounts_read")
+CAPABILITY = os.environ.get("REQUIRED_CAPABILITY") or {"accounts": "accounts_read", "payments": "payment_initiation"}[
+    os.environ.get("RESOURCE_KIND", "accounts")]
 MCP_PATH = "/mcp/v1"
 CA = fedresolve.ca_bundle(os.environ.get("PF_CA_FILE"))
 RESOLVER = fedresolve.Resolver(os.environ["TRUST_ANCHOR"], fedresolve.pinned_anchor_jwks(), CA)
@@ -63,13 +75,12 @@ def resource_metadata() -> dict:
         # The shape of CBA's resources (their ApiMetadata on the authorisation server's Raidiam record).
         "resource": RESOURCE_ID,
         "resource_name": RESOURCE_NAME,
-        "description": "Lists the business accounts visible to the calling agent, and reports balances and "
-                       "available funds on each account.",
-        "keywords": ["business accounts", "balances"],
+        "description": PROFILE["description"],
+        "keywords": PROFILE["keywords"],
         "resource_documentation": RESOURCE_ID + "/.well-known/oauth-protected-resource",
         "authorization_servers": [ISSUER],
-        "scopes_supported": ["accounts.read"],
-        "authorization_details_types_supported": ["accounts_read"],
+        "scopes_supported": PROFILE["scopes"],
+        "authorization_details_types_supported": [CAPABILITY],
         "bearer_methods_supported": ["header"],
         # Enforced by the gateway in front (coaz-pep), not by this server.
         "dpop_bound_access_tokens_required": True,
@@ -152,14 +163,24 @@ def check_member(client_id: str) -> dict:
 
 
 def check(authorization: str) -> dict:
+    """The token, then every agent in it: the client presenting it and, for a delegated token (RFC 8693), the agent it
+    acts for (sub) - each a federation member now, each granted the capability. A sub-agent cannot reach for its caller
+    what its caller does not hold, nor the other way round."""
     claims = check_token(authorization)
     client_id = claims.get("client_id") or claims.get("sub")
-    rp = check_member(client_id)
-    granted = rp.get("authorization_details_types") or []
-    if CAPABILITY not in granted:
-        raise Refused(403, "insufficient_scope",
-                      f"the federation does not grant {client_id} {CAPABILITY} (it holds {granted or 'nothing'})")
-    return {"client_id": client_id, "capabilities": granted, "client_name": rp.get("client_name")}
+    parties = [client_id] + ([claims["sub"]] if claims.get("sub") and claims["sub"] != client_id else [])
+    names = {}
+    for party in parties:
+        rp = check_member(party)
+        granted = rp.get("authorization_details_types") or []
+        if CAPABILITY not in granted:
+            raise Refused(403, "insufficient_scope",
+                          f"the federation does not grant {party} {CAPABILITY} (it holds {granted or 'nothing'})")
+        names[party] = rp.get("client_name")
+    who = {"client_id": client_id, "client_name": names[client_id], "capability": CAPABILITY}
+    if len(parties) > 1:
+        who.update(on_behalf_of=parties[1], on_behalf_of_name=names[parties[1]], act=claims.get("act"))
+    return who
 
 
 # ── MCP ─────────────────────────────────────────────────────────────────────────────────────────────
@@ -177,33 +198,48 @@ ACCOUNTS = [
 ]
 
 
-@mcp.tool()
+def _decision():
+    return {"resource": RESOURCE_ID, **(caller.get() or {})}
+
+
 def list_accounts() -> dict:
     """Lists the business accounts visible to the calling agent, with their balances."""
-    return {"accounts": ACCOUNTS, "decision": {"resource": RESOURCE_ID, **(caller.get() or {})}}
+    return {"accounts": ACCOUNTS, "decision": _decision()}
 
 
-@mcp.tool()
 def get_balance(account_id: str) -> dict:
     """Reports the balance and available funds on one account."""
     account = next((a for a in ACCOUNTS if a["account_id"] == account_id), None)
     if not account:
         return {"error": f"no account {account_id}"}
-    return {**account, "available": account["balance"], "decision": {"resource": RESOURCE_ID, **(caller.get() or {})}}
+    return {**account, "available": account["balance"], "decision": _decision()}
 
 
-@mcp.tool()
 def pay_supplier(from_account: str, to_account: str, amount: float, currency: str = "AUD") -> dict:
     """Pays a supplier from one of the business accounts. Governed at the gateway: the PDP decides on the amount."""
     if not any(a["account_id"] == from_account for a in ACCOUNTS):
         return {"error": f"no account {from_account}"}
-    return {"status": "accepted", "from_account": from_account, "to_account": to_account, "amount": amount,
-            "currency": currency, "decision": {"resource": RESOURCE_ID, **(caller.get() or {})}}
+    return {"status": "accepted", "payment_id": "pay-" + uuid.uuid4().hex[:10], "from_account": from_account,
+            "to_account": to_account, "amount": amount, "currency": currency, "decision": _decision()}
+
+
+def pay_invoice(invoice_id: str, from_account: str, to_account: str, amount: float, currency: str = "AUD") -> dict:
+    """Pays a supplier's invoice from a business account. Governed at the gateway: the PDP decides on the amount."""
+    if not any(a["account_id"] == from_account for a in ACCOUNTS):
+        return {"error": f"no account {from_account}"}
+    return {"status": "accepted", "payment_id": "pay-" + uuid.uuid4().hex[:10], "invoice_id": invoice_id,
+            "from_account": from_account, "to_account": to_account, "amount": amount, "currency": currency,
+            "decision": _decision()}
+
+
+for _tool in {"accounts": (list_accounts, get_balance, pay_supplier), "payments": (pay_invoice,)}[KIND]:
+    mcp.tool()(_tool)
 
 
 # COAZ (the OpenID AuthZEN MCP profile): each tool says how a call maps to an AuthZEN evaluation, so a gateway PEP
 # (../gateway/coaz-pep) can ask the PDP before the call reaches this server. String leaves are CEL over `params` (the
-# tools/call params) and `token` (the access token's claims). The agent acts as itself, so the subject is its client_id.
+# tools/call params) and `token` (the access token's claims). The subject is the client presenting the token - for a
+# delegated token (RFC 8693) the sub-agent acting - and on_behalf_of its sub: the agent it acts for.
 # token_aud is left out on purpose: the PDP's banking package denies any audience but its own demo's.
 from mcp import types as mcp_types  # noqa: E402
 
@@ -218,6 +254,13 @@ COAZ_MAPPINGS = {
     "get_balance": {"subject": _SUBJECT, "action": [{"name": "'get_balance'"}],
                     "resource": [{"type": "'account'", "id": "params.arguments.account_id"}], "context": _CONTEXT},
     # The PDP's own decision: the banking package denies a payment over 2000 outright.
+    "pay_invoice": {"subject": _SUBJECT, "action": [{"name": "'make_payment'"}],
+                    "resource": [{"type": "'account'", "id": "params.arguments.from_account",
+                                  "properties": {"from_account": "params.arguments.from_account",
+                                                 "to_account": "params.arguments.to_account",
+                                                 "invoice_id": "params.arguments.invoice_id"}}],
+                    "context": [{**_CONTEXT[0], "amount": "params.arguments.amount",
+                                 "currency": "has(params.arguments.currency) ? params.arguments.currency : 'AUD'"}]},
     "pay_supplier": {"subject": _SUBJECT, "action": [{"name": "'make_payment'"}],
                      "resource": [{"type": "'account'", "id": "params.arguments.from_account",
                                    "properties": {"from_account": "params.arguments.from_account",

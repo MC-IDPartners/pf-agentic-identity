@@ -121,18 +121,16 @@ func rsaPrivateKey(j map[string]any) (*rsa.PrivateKey, error) {
 	return k, k.Validate()
 }
 
-// refused says whether a token is refused by a signal, and why: one about its agent (client_id, else sub) or about
-// the instance it is bound to (its cnf.jkt, an opaque subject).
+// refused says whether a token is refused by a signal, and why: one about any agent in it (client_id, sub, act.sub)
+// or about the instance it is bound to (its cnf.jkt, an opaque subject).
 func (r *ssfReceiver) refused(claims map[string]any) (string, bool) {
 	if r == nil {
 		return "", false
 	}
-	agent := claimString(claims, "client_id")
-	if agent == "" {
-		agent = claimString(claims, "sub")
-	}
+	// Every party in the token: the client presenting it, the agent it acts for (sub - a delegated token's is the
+	// calling agent), the actor (act.sub), and the instance it is bound to.
 	iat, _ := claims["iat"].(float64)
-	for _, subject := range []string{agent, cnfJkt(claims)} {
+	for _, subject := range []string{claimString(claims, "client_id"), claimString(claims, "sub"), actorSub(claims), cnfJkt(claims)} {
 		if subject == "" {
 			continue
 		}

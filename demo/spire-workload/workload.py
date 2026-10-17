@@ -56,6 +56,7 @@ import sys
 import time
 import traceback
 import uuid
+from urllib.parse import urlsplit
 
 import jwt
 import requests
@@ -313,7 +314,7 @@ def run_federation_discovery_once(server) -> None:
         print("(token is not a JWT)", flush=True)
 
 
-def spiffe_client_bindings(client_id: str, issuer: str) -> list:
+def spiffe_client_bindings(client_id: str, issuer: str, spiffe_ids: str = None) -> list:
     """Which SPIFFE IDs are instances of this client, and how the attester checks them: one binding per ID
     (SPIFFE_IDS, comma-separated; a trailing * matches a path prefix). The attester reads these from this
     entity's chain-validated Entity Configuration (OIDF_ATTESTER_FEDERATION_ENTITY).
@@ -328,7 +329,7 @@ def spiffe_client_bindings(client_id: str, issuer: str) -> list:
     return [{"client_id": client_id, "spiffe_id": spiffe_id.strip(), "issuer": issuer,
              "evidence_type": "spiffe-jwt", "trust_domain": os.environ.get("TRUST_DOMAIN", "example.org"),
              **trust_roots, "entitlement": entitlement, "ttl": int(os.environ.get("ATTESTATION_TTL", "300"))}
-            for spiffe_id in os.environ.get("SPIFFE_IDS", "spiffe://example.org/my-workload").split(",")]
+            for spiffe_id in (spiffe_ids or os.environ.get("SPIFFE_IDS", "spiffe://example.org/my-workload")).split(",")]
 
 
 def provider_entity(provider_id: str, authority: str, hosted: list) -> dict:
@@ -433,61 +434,102 @@ def provider_attester(provider_id: str, hosted: list):
     return attest
 
 
-def run_entity_host() -> None:
-    """The federated attested client's owner, long-running: serves the client's Entity Configuration - its
-    Raidiam authority, its keys, and spiffe_client_bindings - and keeps the client registered at PingFederate.
+def hosted_agents(provider_id: str, authority: str, issuer: str) -> list:
+    """The agents this host serves: the Principal (ENTITY_ID, as ever) and, with a provider, each of HOSTED_AGENTS
+    at <provider>/agent/<name> - an agent other agents call: a client and a resource (interface "agent"), CBA's
+    pattern. Each: its entity key, its bridge key's public half (the client's only key), its SPIFFE bindings, and
+    for a hosted agent its oauth_resource metadata."""
+    principal_private, principal_public = entity_key()
+    with open(require_env("CLIENT_JWKS_FILE")) as f:
+        principal_jwks = json.load(f)
+    agents = [{"id": require_env("ENTITY_ID"), "private": principal_private, "public": principal_public,
+               "client_jwks": principal_jwks, "name": os.environ.get("CLIENT_NAME", "spire-attested-client"),
+               "bindings": spiffe_client_bindings(require_env("ENTITY_ID"), provider_id or issuer), "resource": None}]
+    capabilities = dict(pair.split("=", 1) for pair in os.environ.get("AGENT_CAPABILITIES", "").split(",") if "=" in pair)
+    for name in filter(None, os.environ.get("HOSTED_AGENTS", "").replace(",", " ").split()):
+        if not provider_id:
+            raise RuntimeError("HOSTED_AGENTS needs PROVIDER_ID: the provider hosts them")
+        agent_id = f"{provider_id}/agent/{name}"
+        private, public = federation.load_or_create_key(f"/agents/{name}/entity.private.jwk.json")
+        with open(f"/agents/{name}/bridge.public.jwks.json") as f:
+            client_jwks = json.load(f)
+        capability = capabilities.get(name, "")
+        agents.append({
+            "id": agent_id, "private": private, "public": public, "client_jwks": client_jwks,
+            "name": f"POC {name.replace('-agent', '').title()} Agent",
+            "bindings": spiffe_client_bindings(agent_id, provider_id, f"spiffe://{os.environ.get('TRUST_DOMAIN', 'example.org')}/{name}"),
+            "resource": {
+                "resource": agent_id, "resource_name": f"POC {name.replace('-agent', '').title()} Agent",
+                "authorization_servers": [issuer], "authorization_details_types_supported": [capability] if capability else [],
+                "bearer_methods_supported": ["header"], "dpop_bound_access_tokens_required": True,
+                "endpoints": [agent_id + "/mcp/v1"], "resource_documentation": agent_id + "/.well-known/oauth-protected-resource",
+                "https://cba.com.au/federation/interface": "agent"}})
+    return agents
 
-    The client authenticates with its bridge key (CLIENT_JWKS_FILE, the public half; PingFederate holds the
-    private half), so no instance holds a key of the client's. 0.7.0's token endpoint never registers a client
-    it has not seen, and an explicit registration ends with its chain, so this registers explicitly now and again
-    every REGISTER_EVERY seconds, ahead of the chain's expiry."""
-    entity_id = require_env("ENTITY_ID")
+
+def run_entity_host() -> None:
+    """The agent provider's host, long-running: serves each hosted agent's Entity Configuration - its Raidiam
+    authority, its keys, its spiffe_client_bindings and, for an agent others call, its oauth_resource metadata - and
+    keeps each registered at PingFederate.
+
+    Each client authenticates with its bridge key (the public half here; PingFederate holds the private half), so no
+    instance holds a key of the client's. 0.7.0's token endpoint never registers a client it has not seen, and an
+    explicit registration ends with its chain, so this registers each explicitly now and again every REGISTER_EVERY
+    seconds, ahead of the chain's expiry."""
     authority = require_env("AUTHORITY_HINT")
     server = directory_server()
     issuer = server["Issuer"]
-    private, public = entity_key()
-    with open(require_env("CLIENT_JWKS_FILE")) as f:
-        client_jwks = json.load(f)
-    # With an agent provider (PROVIDER_ID), the attestations are the provider's: PingFederate's attester signs them
-    # as the provider, with the key the provider's Entity Configuration publishes, and the token endpoint trusts
-    # that key through the provider's chain to Raidiam's anchor. Without one, they are PingFederate's own.
+    # With an agent provider (PROVIDER_ID) the attestations are the provider's: it signs them itself (/attest), with
+    # the key its Entity Configuration publishes, and PingFederate's token endpoint trusts that key through the
+    # provider's chain to Raidiam's anchor.
     provider_id = os.environ.get("PROVIDER_ID", "").rstrip("/")
-    bindings = spiffe_client_bindings(entity_id, provider_id or issuer)
-    print(f"entity host: client {entity_id}, {len(bindings)} SPIFFE binding(s): "
-          + ", ".join(b["spiffe_id"] for b in bindings)
-          + f"; attestations issued as {provider_id or issuer}", flush=True)
+    agents = hosted_agents(provider_id, authority, issuer)
+    for ag in agents:
+        print(f"entity host: client {ag['id']}, SPIFFE binding(s) "
+              + ", ".join(b["spiffe_id"] for b in ag["bindings"])
+              + (f", resource for {ag['resource']['authorization_details_types_supported']}" if ag["resource"] else "")
+              + f"; attestations issued as {provider_id or issuer}", flush=True)
 
-    def sign(audience=None):
-        return federation.entity_configuration(entity_id, private, public, authority,
-                                               os.environ.get("CLIENT_NAME", "spire-attested-client"),
-                                               audience=audience, client_jwks=client_jwks,
-                                               extra_claims={"spiffe_client_bindings": bindings})
+    def signer(ag):
+        def sign(audience=None):
+            return federation.entity_configuration(
+                ag["id"], ag["private"], ag["public"], authority, ag["name"], audience=audience,
+                client_jwks=ag["client_jwks"], extra_claims={"spiffe_client_bindings": ag["bindings"]},
+                extra_metadata={"oauth_resource": ag["resource"]} if ag["resource"] else None)
+        return sign
 
+    principal = agents[0]
     others, documents, actions, provider = {}, {}, {}, None
+    for ag in agents[1:]:
+        others[ag["id"]] = signer(ag)
+        documents[urlsplit(ag["id"]).path + "/.well-known/oauth-protected-resource"] = (lambda r: lambda: r)(ag["resource"])
     if provider_id:
-        provider = provider_entity(provider_id, authority, [(entity_id, bindings)])
+        provider = provider_entity(provider_id, authority, [(ag["id"], ag["bindings"]) for ag in agents])
         others[provider_id] = provider["sign"]
         documents["/agents"] = provider["agents"]
         if provider["attest"]:
             actions["/attest"] = provider["attest"]
-    entity_host.serve(entity_id, sign, others, documents, actions)
+    entity_host.serve(principal["id"], signer(principal), others, documents, actions)
     every = int(os.environ.get("REGISTER_EVERY", "600"))
     while True:
-        try:
-            # Sign under the kid Raidiam publishes for the entity key; until Raidiam vouches, nothing registers.
-            public["kid"] = federation.vouched_kid(federation.subordinate_statement(authority, entity_id), public)
-            if provider:
-                # Until Raidiam vouches for the provider's key, its attestations are refused; the client still registers.
-                try:
-                    provider["vouch"]()
-                except Exception as e:
-                    print(f"entity host: provider not vouched for yet: {e}", flush=True)
-            registered = federation.explicit_register(federation.registration_endpoint(issuer), sign(issuer))
-            print(f"entity host: registered {entity_id} at {issuer} until {registered.get('exp')}", flush=True)
-            time.sleep(every)
-        except Exception as e:
-            print(f"entity host: registration failed, retrying in 30 s: {e}", flush=True)
-            time.sleep(30)
+        failed = False
+        if provider:
+            # Until Raidiam vouches for the provider's key, its attestations are refused; the clients still register.
+            try:
+                provider["vouch"]()
+            except Exception as e:
+                print(f"entity host: provider not vouched for yet: {e}", flush=True)
+        for ag in agents:
+            try:
+                # Sign under the kid Raidiam publishes for the entity key; until Raidiam vouches, nothing registers.
+                ag["public"]["kid"] = federation.vouched_kid(federation.subordinate_statement(authority, ag["id"]),
+                                                              ag["public"])
+                registered = federation.explicit_register(federation.registration_endpoint(issuer), signer(ag)(issuer))
+                print(f"entity host: registered {ag['id']} at {issuer} until {registered.get('exp')}", flush=True)
+            except Exception as e:
+                failed = True
+                print(f"entity host: registration of {ag['id']} failed: {e}", flush=True)
+        time.sleep(30 if failed else every)
 
 
 def main() -> None:

@@ -51,7 +51,9 @@ type pepConfig struct {
 	requireToken bool
 	requireDpop  bool
 	// dpopHTUBase: the origin clients address, for the DPoP proof's htu (route context dpop_htu_base).
-	dpopHTUBase      string
+	dpopHTUBase string
+	// tokenAudience: the aud this route's tokens must carry (route context token_audience), else TOKEN_AUDIENCE.
+	tokenAudience    string
 	requireUserLogin bool
 	// omitTokenAud: don't send the agent token's audience to the PDP (route context omit_token_aud). For a PEP that
 	// has verified the audience itself (TOKEN_AUDIENCE) in front of a policy that pins a different one.
@@ -77,6 +79,7 @@ func configFrom(ext map[string]string) pepConfig {
 		requireToken:     isTrue("require_token"),
 		requireDpop:      isTrue("require_dpop"),
 		dpopHTUBase:      ext["dpop_htu_base"],
+		tokenAudience:    ext["token_audience"],
 		requireUserLogin: isTrue("require_user_login"),
 		omitTokenAud:     isTrue("omit_token_aud"),
 		stepupScope:      ext["stepup_scope"],
@@ -215,7 +218,7 @@ func (s *server) check(ctx context.Context, conf pepConfig, method, path string,
 
 	// The token's signature, type, issuer, audience and lifetime, before anything is read from it.
 	if s.tokens != nil && token != "" {
-		if err := s.tokens.verify(token); err != nil {
+		if err := s.tokens.verify(token, conf.tokenAudience); err != nil {
 			log.Printf("[%s] token refused: %v", pep, err)
 			return denySimple(pep, typev3.StatusCode_Unauthorized, codes.Unauthenticated,
 				"Access token refused: "+err.Error(),

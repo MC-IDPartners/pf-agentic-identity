@@ -142,7 +142,8 @@ def certificate_request(private_key, subject: str) -> bytes:
 # ── Trust chain ────────────────────────────────────────────────────────────────────────────────────
 
 def entity_configuration(entity_id: str, private_key, public_jwk: dict, authority: str, client_name: str,
-                         audience: str = None, client_jwks: dict = None, extra_claims: dict = None) -> str:
+                         audience: str = None, client_jwks: dict = None, extra_claims: dict = None,
+                         extra_metadata: dict = None) -> str:
     """The workload's own Entity Configuration: self-issued, self-signed, naming its superior. With an audience
     (the OP's Entity Identifier) it is an explicit registration request (OIDFED §12.2.1).
 
@@ -168,6 +169,7 @@ def entity_configuration(entity_id: str, private_key, public_jwk: dict, authorit
             }
         },
     }
+    claims["metadata"].update(extra_metadata or {})
     claims.update(extra_claims or {})
     if audience:
         claims["aud"] = audience

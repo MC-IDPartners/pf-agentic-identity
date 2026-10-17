@@ -1,0 +1,58 @@
+# Kong as the agent provider's edge, at https://host.docker.internal:8443 (../README.md, "Agents calling agents").
+# The provider hosts its agents' identifiers - <provider>/agent/<name> - and an agent other agents call serves MCP
+# under its own identifier (Raidiam joins its client and resource roles by it), so one origin carries both:
+#
+#   /agent/<name>/mcp*  the agent's MCP, through coaz-pep (token for this agent, DPoP, signals, the PDP)
+#   everything else    the provider itself (entity-host): Entity Configurations, protected resource metadata,
+#                      /attest, /agents - passed through
+_format_version: "3.0"
+
+services:
+- name: provider
+  url: __PROVIDER_URL__
+  routes:
+  - name: provider
+    paths: [/]
+    strip_path: false
+
+- name: accounts-agent
+  url: __ACCOUNTS_AGENT_URL__
+  routes:
+  - name: accounts-agent-mcp
+    paths: [/agent/accounts-agent/mcp]
+    strip_path: false
+    plugins:
+    - name: coaz-pep
+      config:
+        coaz_url: __COAZ_URL__
+        route_config:
+          pep_label: "PEP (Accounts agent)"
+          style: "mcp"
+          require_token: "true"
+          require_dpop: "true"
+          dpop_htu_base: "__PROVIDER_ID__"
+          token_audience: "__PROVIDER_ID__/agent/accounts-agent"
+          require_user_login: "false"
+          omit_token_aud: "true"
+          mcp_upstream_url: "__ACCOUNTS_AGENT_URL__/agent/accounts-agent/mcp/v1"
+
+- name: payments-agent
+  url: __PAYMENTS_AGENT_URL__
+  routes:
+  - name: payments-agent-mcp
+    paths: [/agent/payments-agent/mcp]
+    strip_path: false
+    plugins:
+    - name: coaz-pep
+      config:
+        coaz_url: __COAZ_URL__
+        route_config:
+          pep_label: "PEP (Payments agent)"
+          style: "mcp"
+          require_token: "true"
+          require_dpop: "true"
+          dpop_htu_base: "__PROVIDER_ID__"
+          token_audience: "__PROVIDER_ID__/agent/payments-agent"
+          require_user_login: "false"
+          omit_token_aud: "true"
+          mcp_upstream_url: "__PAYMENTS_AGENT_URL__/agent/payments-agent/mcp/v1"

@@ -9,7 +9,7 @@ package main
 // Environment (verification is on when TOKEN_JWKS_URL is set):
 //   TOKEN_JWKS_URL   the authorisation server's JWKS, e.g. https://<issuer>/pf/JWKS
 //   TOKEN_ISSUER     required iss
-//   TOKEN_AUDIENCE   required aud (one of the token's audiences)
+//   TOKEN_AUDIENCE   required aud (one of the token's audiences); a route's token_audience overrides it
 //   TOKEN_CA_FILE    optional PEM bundle trusted besides the system roots (a private network's CA)
 //   TOKEN_TYP        required typ header, default at+jwt ("" to accept any)
 
@@ -48,8 +48,8 @@ func newTokenVerifier() (*tokenVerifier, error) {
 	}
 	v := &tokenVerifier{jwksURL: url, issuer: os.Getenv("TOKEN_ISSUER"), audience: os.Getenv("TOKEN_AUDIENCE"),
 		typ: envOr("TOKEN_TYP", "at+jwt")}
-	if v.issuer == "" || v.audience == "" {
-		return nil, errors.New("TOKEN_JWKS_URL is set, so TOKEN_ISSUER and TOKEN_AUDIENCE are required")
+	if v.issuer == "" {
+		return nil, errors.New("TOKEN_JWKS_URL is set, so TOKEN_ISSUER is required (and TOKEN_AUDIENCE, or each route's token_audience)")
 	}
 	pool, err := x509.SystemCertPool()
 	if err != nil || pool == nil {
@@ -132,12 +132,16 @@ func publicKey(j map[string]any) (any, error) {
 	return nil, errors.New("unsupported key type")
 }
 
-// verify checks the token's signature, type, issuer, audience and lifetime; the error says which failed.
-func (v *tokenVerifier) verify(token string) error {
+// verify checks the token's signature, type, issuer, audience and lifetime; the error says which failed. audience
+// is the route's (its token_audience), else TOKEN_AUDIENCE.
+func (v *tokenVerifier) verify(token, audience string) error {
 	if err := v.verifySignature(token, v.typ); err != nil {
 		return err
 	}
-	return v.verifyClaims(jwtClaims(token))
+	if audience == "" {
+		audience = v.audience
+	}
+	return v.verifyClaims(jwtClaims(token), audience)
 }
 
 // verifySignature checks a compact JWS's typ (when typ is not "") and its signature against the JWKS.
@@ -197,21 +201,21 @@ func verifyJWS(token, alg string, key any) error {
 	return errors.New("unsupported key")
 }
 
-func (v *tokenVerifier) verifyClaims(claims map[string]any) error {
+func (v *tokenVerifier) verifyClaims(claims map[string]any, audience string) error {
 	if iss, _ := claims["iss"].(string); iss != v.issuer {
 		return fmt.Errorf("iss %q is not %s", iss, v.issuer)
 	}
 	audOK := false
 	switch aud := claims["aud"].(type) {
 	case string:
-		audOK = aud == v.audience
+		audOK = aud == audience
 	case []any:
 		for _, a := range aud {
-			audOK = audOK || a == v.audience
+			audOK = audOK || a == audience
 		}
 	}
 	if !audOK {
-		return fmt.Errorf("aud %v does not include %s", claims["aud"], v.audience)
+		return fmt.Errorf("aud %v does not include %s", claims["aud"], audience)
 	}
 	now := float64(time.Now().Unix())
 	exp, ok := claims["exp"].(float64)
