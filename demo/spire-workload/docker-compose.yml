@@ -41,7 +41,8 @@ services:
       - ./keys:/keys
 
   # An instance of the federated attested client: the attestation flow under the SPIFFE ID the entity host binds,
-  # so the attester takes its client from that entity, validated through Raidiam, not from PingFederate's clients.
+  # so the attester takes its client from the bindings entity (the provider, or the client itself without one),
+  # validated through Raidiam, not from PingFederate's clients.
   #   docker compose run --rm attested-workload
   attested-workload:
     extends: workload
@@ -51,9 +52,7 @@ services:
       AUTH_MODE: attestation
       # Optional: name the client at mint; the attester still checks the SVID against that client's bindings.
       ATTESTATION_CLIENT_ID: ${ATTESTED_CLIENT_ID:-https://host.docker.internal:8443/agent/spire-client}
-      # With an agent provider (RAIDIAM_PROVIDER_ID) the attestations are the provider's, and the attester wants the
-      # JWT-SVID addressed to it; unset, the audience is PingFederate's issuer, from its discovery document.
-      EVIDENCE_AUDIENCE: ${RAIDIAM_PROVIDER_ID:-}
+      # The attester signs as PingFederate and wants the JWT-SVID addressed to its issuer, from its discovery document.
 
   # SPIRE's OIDC Discovery Provider (spire-oidc.conf): the trust domain's live JWT-SVID keys at
   # https://host.docker.internal:8445/keys, the bundle_url the federated client's bindings name. Needs a SPIRE entry
@@ -75,8 +74,9 @@ services:
       - spire-sockets:/run/spire/sockets
 
   # The federated attested client's owner (../raidiam/README.md, "Attestation from a federation entity"): serves its
-  # Entity Configuration with spiffe_client_bindings at ATTESTED_CLIENT_ID, which PingFederate's attester resolves
-  # (OIDF_ATTESTER_FEDERATION_ENTITY), and keeps the client registered at PingFederate.
+  # Entity Configuration with spiffe_client_bindings at ATTESTED_CLIENT_ID - and, as the agent provider (PROVIDER_ID),
+  # its own, binding every agent it hosts, which PingFederate's attester resolves (OIDF_ATTESTER_FEDERATION_ENTITY) -
+  # and keeps the clients registered at PingFederate.
   #   docker compose up -d entity-host
   entity-host:
     build: .
@@ -125,7 +125,8 @@ services:
       - ../keys/raidiam/spire-bundle.jwks.json:/spire/spire-bundle.jwks.json:ro
 
   # The agent-r flow (../raidiam/README.md, "The agent-r flow"): an agent that is handed only its identifier, gets
-  # this copy attested by its provider (entity-host's /attest, on SPIRE's word), reads its capabilities and finds a
+  # this copy attested on SPIRE's word - by PingFederate's attester, or its provider (entity-host's /attest) with
+  # ATTESTER=provider - reads its capabilities and finds a
   # resource through the federation, and calls it with a token from PingFederate. Needs entity-host (with
   # RAIDIAM_PROVIDER_ID), spire-oidc and rs-accounts up, and PingFederate started with RAIDIAM_RESOURCE_ID.
   #   docker compose run --rm agent [list-accounts | get-balance]
@@ -139,6 +140,9 @@ services:
     environment:
       AGENT_ID: ${ATTESTED_CLIENT_ID:-https://host.docker.internal:8443/agent/spire-client}
       AGENT_PROVIDER: ${RAIDIAM_PROVIDER_ID:-https://host.docker.internal:8443}
+      # Who attests this copy: pingfederate (PingFederate's own attester, the default) or provider (the provider's
+      # /attest). The token endpoint trusts either through its federation chain to Raidiam's anchor.
+      ATTESTER: ${ATTESTER:-pingfederate}
       AUTHORITY: ${AUTHORITY_HINT:-https://authority.directory.cba.raidiam.io/authority/5a27c88b-97ed-4d37-a3c8-59c66b19aa25}
       TRUST_ANCHOR: ${TRUST_ANCHOR:-https://federation.directory.cba.raidiam.io/federation_entity/ff726945-ebd7-45e2-9869-c11227669433}
       TRUST_ANCHOR_ENV_FILE: /fed/vars.raidiam.env
@@ -227,6 +231,7 @@ services:
       AGENT_PROVIDER: ${RAIDIAM_PROVIDER_ID:-https://host.docker.internal:8443}
       DOWNSTREAM_RESOURCE: ${RAIDIAM_RESOURCE_ID:-https://host.docker.internal:8446}
       AUTHORISATION_SERVER: ${PF_BASE_URL:-https://bottle-platonic-parted.ngrok-free.dev}
+      ATTESTER: ${ATTESTER:-pingfederate}
       ISSUER_HOST_OVERRIDE: host.docker.internal:${PF_PORT_HTTPS:-9031}
       PF_CA_FILE: /certs/pf-runtime-tls-ca.crt
       SPIRE_SOCKET: /run/spire/sockets/agent.sock

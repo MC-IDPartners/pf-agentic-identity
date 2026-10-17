@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 # The agent provider: a federation entity of its own, vouched for by Raidiam (its own software statement, ClientId
 # the entity host's root, e.g. https://host.docker.internal:8443), that hosts the agents' entity configurations and
-# publishes the attester's key - so PingFederate trusts the attestations through the federation instead of
-# oidf.mock.attesters. The pattern of CBA's agent provider (https://provider.demo.cba.raidiam.io). See README.md,
-# "The agent provider".
+# publishes its attester key - so PingFederate trusts the attestations it signs (/attest) through the federation - and
+# the SPIFFE bindings of every agent it hosts, which PingFederate's own attester reads. The pattern of CBA's agent
+# provider (https://provider.demo.cba.raidiam.io). See README.md, "Attesters trusted through the federation".
 #
 #   raidiam/provider.sh keys          the provider's federation entity key (RSA 2048, as Raidiam certifies
 #                                     rtssigning keys) and the attester's signing key (EC P-256, ES256)

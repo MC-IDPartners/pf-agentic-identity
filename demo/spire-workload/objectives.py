@@ -5,7 +5,7 @@ In the rig's terms: Raidiam is the Trust Controller (the federation's authority 
 Identities' trust material - statements, keys, capability envelopes, trust marks); the agent marketplace is the Agent
 registry; PingFederate is the Identity-layer Client Representation; SPIRE is the Workload-layer Representation; Kong +
 coaz-pep is the gateway/PEP; PingAuthorize is the PDP; the agent provider (entity-host) hosts the agents' Entity
-Configurations and attests their instances.
+Configurations; PingFederate's co-hosted attester, or the provider, attests their instances.
 """
 import re
 
@@ -64,6 +64,11 @@ STAGES = {
                   ["TC-05", "TC-09", "TC-10", "TC-21", "TC-26", "TC-27"]),
     "spire": ("The Workload-layer Representation: a SPIRE registration entry binding the agent's SPIFFE ID to the "
               "containers allowed to run it.", ["TC-28"]),
+    "attesters": ("Who attests the agent's instances, and why PingFederate trusts the attestation: PingFederate's own "
+                  "attester, an OpenID Federation entity like any other - its key in PingFederate's Entity Configuration, "
+                  "PingFederate in Raidiam's federation, the agents' SPIFFE bindings read through the provider's chain - or "
+                  "the agent provider's; each trusted only through its chain to the anchor, nothing statically.",
+                  ["TC-09", "TC-11", "TC-12", "TC-26", "TC-28"]),
     "run": ("The Principal acting as itself: attested on SPIRE's word, its envelope read from the Trust Controller, the "
             "resource found through the federation, a token bound to its instance, the call allowed after the trust "
             "checks.", ["TC-03", "TC-09", "TC-10", "TC-27", "TC-28"]),
@@ -96,8 +101,22 @@ CHECKS = [
      "(chain resolved and validated, policy applied), not configured by hand"),
     (r"^entry spiffe://", ["TC-28"], "the workload identity is registered programmatically (spire-server API)"),
     (r"^the run completed", ["TC-03"], "the whole token flow, trust checks included, ends in access"),
-    (r"^attested by the provider", ["TC-28", "TC-26"],
-     "the agent provider vouches for this running instance, signing with a key the Trust Controller publishes for it"),
+    (r"^attested by (the provider|PingFederate's attester)", ["TC-28", "TC-26"],
+     "an attester vouches for this running instance on SPIRE's evidence, signing with a key its own Entity "
+     "Configuration publishes and the Trust Controller's chain vouches for - no key of the agent's own is involved"),
+    (r"^PingFederate publishes its attester key", ["TC-09", "TC-11", "TC-28"],
+     "PingFederate's attester is federation-native: any authorisation server in the federation, PingFederate's own "
+     "token endpoint included, verifies its attestations by resolving PingFederate's chain"),
+    (r"^Raidiam vouches for PingFederate", ["TC-09", "TC-10", "TC-12"],
+     "the existing authorisation server is a member of the Trust Controller's federation, its keys vouched for"),
+    (r"^the provider binds the agents", ["TC-28", "TC-10", "TC-25"],
+     "which workloads are instances of which agent is federation metadata; PingFederate's attester reads it only "
+     "through the provider's chain to the anchor - nothing configured in PingFederate per agent"),
+    (r"trusts no static attesters", ["TC-11", "TC-15"],
+     "no development trust shortcut: every attester is trusted through the federation"),
+    (r"attested by .* instead is trusted too", ["TC-12", "TC-28"],
+     "attestation is pluggable - the enterprise authorisation server's attester or the agent provider's - both trusted "
+     "the same way"),
     (r"^attested as this agent", ["TC-28"], "the attested instance is bound to the Agent Identity's client"),
     (r"^SPIRE identified the container", ["TC-28"],
      "the SPIFFE ID comes from SPIRE's attestation of the container, not from anything the agent claims"),
@@ -110,7 +129,8 @@ CHECKS = [
      "the token is DPoP-bound (cnf.jkt) to the attested instance key: useless to anyone else"),
     (r"^the resource allowed the call", ["TC-03", "TC-08"],
      "access granted only after gateway, PDP and the resource's own federation check"),
-    (r"refused at /attest", ["TC-28", "TC-03"], "a workload SPIRE does not bind to the agent gets no attestation"),
+    (r"refused attestation as the agent", ["TC-28", "TC-03"],
+     "a workload SPIRE does not bind to the agent gets no attestation as it"),
     (r"^a job outside the envelope", ["TC-27", "TC-08"], "a capability the Trust Controller did not grant is refused"),
     (r"refuses a call with no token", ["TC-14", "TC-03"], "no anonymous access"),
     (r"^a suspended agent is refused", ["TC-04", "TC-01", "TC-07"], "marketplace suspension -> identity withdrawal"),

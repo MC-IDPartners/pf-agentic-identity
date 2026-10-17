@@ -6,8 +6,8 @@ checks - things the agent itself would refuse to try. Prints one JSON line per p
                                                  # instance of it while another carries on
     PROBE=emit EMIT_EVENT=... EMIT_SUB=... EMIT_SECRET=... python probe.py   # raise one event
 
-Each "instance" is a key of its own, attested by the provider on this container's SVID - two copies of the agent - and
-each token is DPoP-bound to its instance's key.
+Each "instance" is a key of its own, attested on this container's SVID (agent.attest: ATTESTER=pingfederate or
+provider) - two copies of the agent - and each token is DPoP-bound to its instance's key.
 """
 import json
 import os
@@ -15,7 +15,6 @@ import time
 
 import jwt
 import requests
-from client_attestation_sdk.svid_source import SpireWorkloadApiSvidSource
 from cryptography.hazmat.primitives.asymmetric import ec
 
 import agent as a
@@ -33,16 +32,12 @@ GET_BALANCE = {"name": "get_balance", "arguments": {"account_id": "acc-002"}}
 
 
 class Instance:
-    """One copy of the agent: its key, attested by the provider, and a DPoP-bound token for the resource."""
+    """One copy of the agent: its key, attested on SPIRE's word, and a DPoP-bound token for the resource."""
 
     def __init__(self, key_file: str):
         self.key, public = a.instance_key(key_file)
         self.jkt = a.jwk_thumbprint(a.public_jwk(self.key))
-        provider = os.environ["AGENT_PROVIDER"].rstrip("/")
-        svid = SpireWorkloadApiSvidSource(socket_path=os.environ.get("SPIRE_SOCKET", "/run/spire/sockets/agent.sock"),
-                                          spire_agent="spire-agent").fetch(provider)
-        self.attestation = requests.post(provider + "/attest", verify=ca, timeout=20, json={
-            "client_id": agent_id, "instance_jwk": public, "svid": svid}).json()["wallet_attestation"]
+        self.attestation = a.attest(agent_id, self.key, public, os.environ["AGENT_PROVIDER"].rstrip("/"), issuer, ca)
 
     def token(self) -> str:
         return a.token(issuer, resource, agent_id, self.attestation, self.key)

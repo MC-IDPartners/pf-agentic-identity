@@ -6,7 +6,8 @@ It serves MCP at <its identifier>/mcp/v1, behind the gateway, which has already 
 audience = this agent, DPoP from the caller's instance key, Shared Signals) and asked the PDP. For each tool call it:
 
   1. exchanges the caller's token at PingFederate (RFC 8693): subject_token = that token; resource = the resource it
-     calls next; client authentication = its own attestation from the provider, in DPoP combined mode with its own
+     calls next; client authentication = its own attestation (ATTESTER: PingFederate's attester, or the provider's),
+     in DPoP combined mode with its own
      instance key. The new token: sub = the caller, act = {sub: this agent}, aud = the resource, cnf.jkt = this
      instance's key;
   2. calls the resource through its gateway with that token and a DPoP proof per request;
@@ -24,7 +25,6 @@ from urllib.parse import urlsplit
 import jwt
 import requests
 import uvicorn
-from client_attestation_sdk.svid_source import SpireWorkloadApiSvidSource
 from mcp import types as mcp_types
 from mcp.server.fastmcp import FastMCP
 from mcp.server.transport_security import TransportSecuritySettings
@@ -49,15 +49,16 @@ _attestation = {"jwt": None, "exp": 0}
 
 
 def attestation() -> str:
-    """This instance's attestation from the provider, on SPIRE's word; fetched again before it runs out."""
+    """This instance's attestation on SPIRE's word (a.attest: ATTESTER=pingfederate or provider); fetched again
+    before it runs out."""
     if not _attestation["jwt"] or _attestation["exp"] - time.time() < 120:
-        svid = SpireWorkloadApiSvidSource(socket_path=os.environ.get("SPIRE_SOCKET", "/run/spire/sockets/agent.sock"),
-                                          spire_agent="spire-agent").fetch(PROVIDER)
-        r = requests.post(PROVIDER + "/attest", json={"client_id": AGENT_ID, "instance_jwk": PUBLIC, "svid": svid},
-                          verify=CA, timeout=20)
-        r.raise_for_status()
-        _attestation["jwt"] = r.json()["wallet_attestation"]
-        _attestation["exp"] = jwt.decode(_attestation["jwt"], options={"verify_signature": False})["exp"]
+        try:
+            _attestation["jwt"] = a.attest(AGENT_ID, KEY, PUBLIC, PROVIDER, ISSUER, CA)
+        except a.Refused as e:  # a SystemExit, for the agent's command line; here, an error for this call only
+            raise RuntimeError(str(e)) from None
+        claims = jwt.decode(_attestation["jwt"], options={"verify_signature": False})
+        _attestation["exp"] = claims["exp"]
+        print(f"{KIND} agent: attested by {claims['iss']} ({a.ATTESTER}) until {time.ctime(claims['exp'])}", flush=True)
     return _attestation["jwt"]
 
 

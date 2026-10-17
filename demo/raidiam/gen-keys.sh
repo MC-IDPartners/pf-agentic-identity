@@ -2,9 +2,10 @@
 # The raidiam profile's two key pairs, under keys/raidiam/ (git-ignored, like every key under keys/):
 #
 #   attester-signing   PingFederate's attester signs the client attestations it issues with this (the attestation
-#                      client's attestation_signing_jwk), and its token endpoint trusts the public half
-#                      (oidf.mock.attesters, rendered by render-runtime-keys.sh) - a development hook, refused in
-#                      production, standing in for an attester trusted through a federation chain.
+#                      client's attestation_signing_jwk, and OIDF_ATTESTER_SIGNING_JWK for the clients a federation
+#                      entity binds); PingFederate's Entity Configuration publishes the public half as
+#                      oauth_client_attester.jwks (OIDF_FEDERATION_ATTESTER_JWKS), so its token endpoint - or any
+#                      authorisation server in the federation - trusts it through PingFederate's chain.
 #   bridge-<client>    attest_jwt_client_auth's bridge: having checked an attestation, the token-endpoint filter
 #                      signs a private_key_jwt for the attested client with the private half, and PingFederate
 #                      authenticates it against the public half registered on the client (terraform/attestation.tf).

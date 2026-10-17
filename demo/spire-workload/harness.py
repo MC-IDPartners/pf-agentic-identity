@@ -5,6 +5,8 @@
     python harness.py --report out.json    # also write the report as JSON
     python harness.py --brief              # one line per check (the default is verbose: each check's PoC objectives,
                                            # what it proves and its evidence, then the objectives' coverage)
+    python harness.py --attester provider  # the Principal attested by the agent provider's /attest, not PingFederate's
+                                           # attester (the default); the attesters stage runs the other one either way
 
 Stages, each a pass, a fail or a skip in the report:
 
@@ -14,10 +16,13 @@ Stages, each a pass, a fail or a skip in the report:
   spire        a SPIRE entry for the agent's SPIFFE ID, selecting containers by the label the agent runs under;
                created if missing (and removed afterwards, unless --keep)
   run          docker compose run agent <job>, under that label; its AGENT_RESULT line is what gets checked:
-               attested by the provider, for this agent and SPIFFE ID; the capability in its envelope; the
-               resource chosen; a token for this agent with aud = the resource; the call allowed
-  negatives    another workload's container is refused at /attest; a job outside the envelope is refused before
-               a request is built; the resource refuses a call with no token
+               attested by the attester (--attester), for this agent and SPIFFE ID; the capability in its envelope;
+               the resource chosen; a token for this agent with aud = the resource; the call allowed
+  attesters    why PingFederate trusts the attestation: its own attester's key in its Entity Configuration, Raidiam
+               vouching for PingFederate, the agents' SPIFFE bindings read from the provider's chain, no static
+               (mock) attesters; then the same job attested by the other attester
+  negatives    another workload's container is refused attestation as the agent; a job outside the envelope is refused
+               before a request is built; the resource refuses a call with no token
   gateway      with the agent's own token (probe.py): a forged token is refused at the gateway; the PDP permits
                get_balance; the PDP denies a large payment (COAZ -32401) before it reaches the resource
   a2a          agents calling agents: the Principal's pay-invoice - the Accounts and Payments agents found through the
@@ -253,9 +258,10 @@ def spire_entry(rep: Report, a) -> bool:
     return ok
 
 
-def run_agent(a, job: str, label: str) -> dict:
+def run_agent(a, job: str, label: str, attester: str = None) -> dict:
     out = compose("run", "--rm", "-l", f"app={label}", "agent", job,
-                  env={"ATTESTED_CLIENT_ID": a.agent, "RAIDIAM_PROVIDER_ID": a.provider, "RAIDIAM_RESOURCE_ID": a.resource})
+                  env={"ATTESTED_CLIENT_ID": a.agent, "RAIDIAM_PROVIDER_ID": a.provider, "RAIDIAM_RESOURCE_ID": a.resource,
+                       "ATTESTER": attester or a.attester})
     line = next((l for l in reversed(out.stdout.splitlines()) if l.startswith("AGENT_RESULT ")), None)
     if not line:
         tail = (out.stdout + out.stderr).strip().splitlines()[-5:]
@@ -270,7 +276,8 @@ def run(rep: Report, a) -> dict:
     rep.expect("run", "the run completed", r.get("outcome") == "ok",
                r.get("reason") or "" if r.get("outcome") != "ok" else "")
     att = s.get("attest", {})
-    rep.expect("run", "attested by the provider", att.get("iss") == a.provider, f"iss {att.get('iss')}")
+    rep.expect("run", f"attested by {attester_name(a.attester)}", att.get("iss") == attester_issuer(a, a.attester),
+               f"iss {att.get('iss')}, signing key {att.get('kid')}")
     rep.expect("run", "attested as this agent", att.get("sub") == a.agent, f"sub {att.get('sub')}")
     rep.expect("run", "SPIRE identified the container", att.get("spiffe_id") == a.spiffe_id, f"{att.get('spiffe_id')}")
     env = s.get("envelope", {})
@@ -293,13 +300,77 @@ def run(rep: Report, a) -> dict:
     return r
 
 
+def attester_name(attester: str) -> str:
+    return "the provider" if attester == "provider" else "PingFederate's attester"
+
+
+def attester_issuer(a, attester: str) -> str:
+    return a.provider if attester == "provider" else a.issuer
+
+
+def attesters(rep: Report, a, result: dict):
+    """Why PingFederate's token endpoint trusted the attestation: PingFederate's own attester is an OpenID Federation
+    entity like any other - its key in PingFederate's Entity Configuration, PingFederate in Raidiam's federation, the
+    agents' SPIFFE bindings read from the provider's chain - and nothing is trusted statically. Then the same job,
+    attested by the other attester."""
+    rep.stage("attesters")
+    att = (result or {}).get("steps", {}).get("attest", {})
+    try:
+        out = in_network(
+            "import requests,os,base64,json;t=requests.get('https://host.docker.internal:9031/.well-known/openid-federation',"
+            "verify=os.environ['PF_CA_FILE']).text;p=t.split('.')[1];p+='='*(-len(p)%4);c=json.loads(base64.urlsafe_b64decode(p));"
+            "print(json.dumps([k.get('kid') for k in c.get('metadata',{}).get('oauth_client_attester',{}).get('jwks',{}).get('keys',[])]))")
+        kids = json.loads(out)
+        signed = att.get("kid") in kids if a.attester != "provider" else bool(kids)
+        rep.expect("attesters", "PingFederate publishes its attester key in its Entity Configuration (oauth_client_attester)",
+                   signed, f"kids {kids}" + (f"; the run's attestation was signed with {att.get('kid')}"
+                                             if a.attester != "provider" else ""))
+    except Exception as e:
+        rep.expect("attesters", "PingFederate publishes its attester key in its Entity Configuration (oauth_client_attester)",
+                   False, str(e))
+    try:
+        statement = raidiam_fetch(a.issuer)
+        rep.expect("attesters", "Raidiam vouches for PingFederate, so its attester's key resolves through the federation",
+                   statement.get("sub") == a.issuer,
+                   f"subordinate statement from {statement['iss'].rsplit('/', 1)[-1]}, exp {time.ctime(statement['exp'])}")
+    except Exception as e:
+        rep.expect("attesters", "Raidiam vouches for PingFederate, so its attester's key resolves through the federation",
+                   False, str(e))
+    try:
+        out = in_network(
+            "import requests,os,base64,json;t=requests.get('" + a.provider + "/.well-known/openid-federation',"
+            "verify=os.environ['PF_CA_FILE']).text;p=t.split('.')[1];p+='='*(-len(p)%4);c=json.loads(base64.urlsafe_b64decode(p));"
+            "print(json.dumps([[b['client_id'],b['spiffe_id'],b['issuer']] for b in c.get('spiffe_client_bindings',[])]))")
+        bindings = json.loads(out)
+        mine = [b for b in bindings if b[0] == a.agent and b[1] == a.spiffe_id and b[2] == a.issuer]
+        rep.expect("attesters", "the provider binds the agents' SPIFFE IDs for PingFederate's attester",
+                   bool(mine), f"{len(bindings)} binding(s): " + ", ".join(f"{b[1]} -> {b[0].rsplit('/', 1)[-1]}"
+                                                                           for b in bindings))
+    except Exception as e:
+        rep.expect("attesters", "the provider binds the agents' SPIFFE IDs for PingFederate's attester", False, str(e))
+    inspect = sh("docker", "inspect", a.pf_container, "--format",
+                 "{{range .Config.Env}}{{println .}}{{end}}{{range .Mounts}}{{println .Destination}}{{end}}")
+    rep.expect("attesters", "PingFederate trusts no static attesters (no oidf.mock.attesters)",
+               inspect.returncode == 0 and "mock" not in inspect.stdout.lower(),
+               "every attester is trusted through its federation chain" if inspect.returncode == 0
+               else inspect.stderr.strip()[-120:])
+
+    other = "provider" if a.attester != "provider" else "pingfederate"
+    r = run_agent(a, a.job, a.label, attester=other)
+    o = r.get("steps", {}).get("attest", {})
+    rep.expect("attesters", f"the same job attested by {attester_name(other)} instead is trusted too",
+               r.get("outcome") == "ok" and o.get("iss") == attester_issuer(a, other),
+               f"iss {o.get('iss')}: {r.get('outcome')}" + (f" - {r.get('reason')}"[:120] if r.get("reason") else ""))
+
+
 def negatives(rep: Report, a):
     rep.stage("negatives")
     r = run_agent(a, a.job, a.other_label)
     att = r.get("steps", {}).get("attest", {})
-    rep.expect("negatives", f"a container labelled app={a.other_label} is refused at /attest",
-               r.get("outcome") == "refused" and r.get("refused_at") == "attest" and att.get("status") == 403,
-               f"{att.get('spiffe_id')}: {r.get('reason', '')[:90]}")
+    rep.expect("negatives", f"a container labelled app={a.other_label} is refused attestation as the agent",
+               r.get("outcome") == "refused" and r.get("refused_at") == "attest"
+               and (att.get("status") == 403 or att.get("error") == "not_this_client"),
+               f"{att.get('spiffe_id')}: {r.get('reason', '')[:110]}")
 
     r = run_agent(a, "loan-balance", a.label)
     rep.expect("negatives", "a job outside the envelope is refused before a request",
@@ -495,6 +566,10 @@ def main():
     p = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     p.add_argument("--agent", default="https://host.docker.internal:8443/agent/spire-client")
     p.add_argument("--provider", default="https://host.docker.internal:8443")
+    p.add_argument("--issuer", default="https://bottle-platonic-parted.ngrok-free.dev", help="PingFederate's issuer")
+    p.add_argument("--attester", choices=["pingfederate", "provider"], default="pingfederate",
+                   help="who attests the Principal: PingFederate's attester or the agent provider")
+    p.add_argument("--pf-container", default="pf-agentic-identity")
     p.add_argument("--resource", default="https://host.docker.internal:8446")
     p.add_argument("--payments", default="https://host.docker.internal:8447", help="rs-payments' identifier")
     p.add_argument("--label", default="spire-client", help="the docker label app=<label> the agent runs under")
@@ -509,14 +584,16 @@ def main():
     p.add_argument("--brief", action="store_true", help="one line per check, no objectives, explanations or evidence")
     a = p.parse_args()
     a.created = []
+    ENV["ATTESTER"] = a.attester  # every agent and probe run
 
     rep = Report(verbose=not a.brief)
-    print(f"harness: {a.agent} ({a.spiffe_id}), job {a.job}", flush=True)
+    print(f"harness: {a.agent} ({a.spiffe_id}), job {a.job}, attested by {attester_name(a.attester)}", flush=True)
     started = a.started = time.time()
     result = None
     try:
         if preflight(rep, a) and spire_entry(rep, a):
             result = run(rep, a)
+            attesters(rep, a, result)
             if not a.skip_negatives:
                 negatives(rep, a)
                 gateway(rep, a)
@@ -533,7 +610,7 @@ def main():
           f"in {time.time() - started:.0f} s", flush=True)
     if a.report:
         with open(a.report, "w") as f:
-            json.dump({"agent": a.agent, "job": a.job, "at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+            json.dump({"agent": a.agent, "job": a.job, "attester": a.attester, "at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
                        "checks": rep.rows, "objectives": rep.coverage(), "agent_result": result}, f, indent=2)
     sys.exit(1 if rep.failed else 0)
 

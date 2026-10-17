@@ -159,7 +159,7 @@ the anchor's Entity Configuration, checked out of band.
 
 | Shortcut | In production |
 |---|---|
-| `oidf.mock.attesters` (the `spire-workload` client's attester, trusted with no chain) | removed: attesters trusted through the federation only, as the agent provider is |
+| Attester trust | already as in production: no `oidf.mock.attesters`; PingFederate's attester and the provider's are trusted through their federation chains |
 | Bridge keys in a file (`OIDF_BRIDGE_SIGNER_BACKING=config`) | OpenBao (`vault`) |
 | Attester private keys inline (`OIDF_ATTESTER_SIGNING_JWK`, `attestation_signing_jwk`) | an OpenBao key reference |
 | The provider's attester key in a mounted file | an HSM or KMS key (AWS KMS, say) |

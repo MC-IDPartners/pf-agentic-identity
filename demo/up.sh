@@ -182,8 +182,7 @@ case "${PF_PROFILE:-}" in
   raidiam) PROFILE_VARS=("$HERE/vars.raidiam.env") ;;
 esac
 if [[ "${PF_PROFILE:-}" == raidiam ]]; then
-  # The attester PF trusts at its own token endpoint (oidf.mock.attesters) and the bridge keys, mounted by
-  # docker-compose.raidiam.yml. Both name the issuer, so they are rendered for this one.
+  # The bridge keys, mounted by docker-compose.raidiam.yml; they name the issuer, so they are rendered for this one.
   "$HERE/raidiam/render-runtime-keys.sh" "$PF_BASE_URL"
   # ":" explicitly: docker compose splits COMPOSE_FILE on ";" on Windows by default.
   export COMPOSE_PATH_SEPARATOR=":" COMPOSE_FILE="docker-compose.yml:docker-compose.raidiam.yml"
@@ -196,18 +195,24 @@ text = sys.stdin.read().replace("{{SUITE_BASE_URL}}", os.environ["SUITE_BASE_URL
 public = lambda m: json.dumps(json.load(open(os.path.join(os.environ["KEYS"], m.group(1) + ".public.jwks.json"))), separators=(",", ":"))
 sys.stdout.write(re.sub(r"\{\{PUBLIC_JWKS:([a-z0-9-]+)\}\}", public, text))' > "$CTX/vars.env"
 sed -n 's/^TF_VAR_ssf_introspection_client_secret=/OIDF_SSF_INTROSPECTION_CLIENT_SECRET=/p' "$HERE/secrets.env" >> "$CTX/vars.env"
-if [[ "${PF_PROFILE:-}" == raidiam && -n "${RAIDIAM_ATTESTED_CLIENT_ID:-}" ]]; then
-  # The attester learns that client's SPIFFE bindings from its Entity Configuration, chain-validated to Raidiam's
-  # anchor, and signs its attestations with the key its token endpoint trusts (mock-attesters.json). The entity
-  # is served from the Docker host, a private address the fetch policy refuses unless named. With an agent provider
-  # (RAIDIAM_PROVIDER_ID, raidiam/provider.sh) the attester signs as the provider, with the key the provider's Entity
-  # Configuration publishes, and the token endpoint trusts that key through the provider's chain instead.
-  ATTESTER_JWK="$HERE/keys/raidiam/attester-signing.private.jwk.json"
-  [[ -z "${RAIDIAM_PROVIDER_ID:-}" ]] || ATTESTER_JWK="$HERE/keys/raidiam/provider/attester.private.jwk.json"
-  { echo "OIDF_ATTESTER_FEDERATION_ENTITY=$RAIDIAM_ATTESTED_CLIENT_ID"
-    echo "OIDF_ATTESTER_SIGNING_JWK=$(tr -d '\n' < "$ATTESTER_JWK")"
-    echo "OIDF_FETCH_HOST_ALLOWLIST=$(python3 -c 'import sys,urllib.parse;print(urllib.parse.urlsplit(sys.argv[1]).hostname)' "$RAIDIAM_ATTESTED_CLIENT_ID")"
+if [[ "${PF_PROFILE:-}" == raidiam ]]; then
+  # PingFederate's own attester, trusted through the federation like anyone else's: it signs with its own key
+  # (attester-signing), which PingFederate's Entity Configuration publishes as oauth_client_attester.jwks - so its
+  # token endpoint, or any other authorisation server in the federation, verifies its attestations by resolving
+  # PingFederate's chain to Raidiam's anchor (FederationAttesterKeyResolver). No mock attesters.
+  { echo "OIDF_ATTESTER_SIGNING_JWK=$(tr -d '\n' < "$HERE/keys/raidiam/attester-signing.private.jwk.json")"
+    echo "OIDF_FEDERATION_ATTESTER_JWKS=$(tr -d '\n' < "$HERE/keys/raidiam/attester-signing.public.jwks.json")"
   } >> "$CTX/vars.env"
+  # Which SPIFFE IDs are instances of which client: the spiffe_client_bindings of one federation entity, chain-
+  # validated to the anchor. With an agent provider (RAIDIAM_PROVIDER_ID, raidiam/provider.sh) that is the provider,
+  # whose Entity Configuration binds all the agents it hosts; else the attested client itself. The entity is served
+  # from the Docker host, a private address the fetch policy refuses unless named.
+  BINDINGS_ENTITY="${RAIDIAM_PROVIDER_ID:-${RAIDIAM_ATTESTED_CLIENT_ID:-}}"
+  if [[ -n "$BINDINGS_ENTITY" ]]; then
+    { echo "OIDF_ATTESTER_FEDERATION_ENTITY=$BINDINGS_ENTITY"
+      echo "OIDF_FETCH_HOST_ALLOWLIST=$(python3 -c 'import sys,urllib.parse;print(urllib.parse.urlsplit(sys.argv[1]).hostname)' "$BINDINGS_ENTITY")"
+    } >> "$CTX/vars.env"
+  fi
 fi
 chmod 600 "$CTX/vars.env"
 

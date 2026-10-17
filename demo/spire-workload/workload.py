@@ -334,13 +334,17 @@ def spiffe_client_bindings(client_id: str, issuer: str, spiffe_ids: str = None) 
 
 def provider_entity(provider_id: str, authority: str, hosted: list) -> dict:
     """The agent provider (raidiam/provider.sh; the pattern of CBA's https://provider.demo.cba.raidiam.io): an entity
-    of its own, with its own Raidiam software statement, whose Entity Configuration publishes the attester's key -
-    as metadata.oauth_client_attester.jwks, where PingFederate's token endpoint looks for it
-    (FederationAttesterKeyResolver), and as federation_entity.attestation_jwks, where CBA's provider puts it.
+    of its own, with its own Raidiam software statement, whose Entity Configuration publishes
 
-    PROVIDER_KEY_FILE: its federation entity key, certified by Raidiam. ATTESTER_JWKS_FILE: the public half of the
-    key PingFederate's attester signs with (OIDF_ATTESTER_SIGNING_JWK). Returns sign(), vouch() - sign under the
-    kid Raidiam publishes - and agents(), the /agents listing."""
+    - its own attester key - as metadata.oauth_client_attester.jwks, where an authorisation server's token endpoint
+      looks for it (PingFederate's FederationAttesterKeyResolver), and as federation_entity.attestation_jwks, where
+      CBA's provider puts it - for the attestations it signs itself (/attest);
+    - spiffe_client_bindings: which SPIFFE IDs are instances of which of its agents, for every agent it hosts. Those
+      naming PingFederate as issuer are what PingFederate's attester reads (OIDF_ATTESTER_FEDERATION_ENTITY = the
+      provider), trusting them because the provider's chain resolves to Raidiam's anchor.
+
+    PROVIDER_KEY_FILE: its federation entity key, certified by Raidiam. ATTESTER_JWKS_FILE: the public half of its
+    attester key. Returns sign(), vouch() - sign under the kid Raidiam publishes - and agents(), the /agents listing."""
     private, public = federation.load_or_create_key(require_env("PROVIDER_KEY_FILE"))
     with open(require_env("ATTESTER_JWKS_FILE")) as f:
         attester_jwks = json.load(f)
@@ -352,6 +356,7 @@ def provider_entity(provider_id: str, authority: str, hosted: list) -> dict:
             "iss": provider_id, "sub": provider_id, "iat": now, "exp": now + 3600,
             "jwks": {"keys": [public]},
             "authority_hints": [authority],
+            "spiffe_client_bindings": [b for _, bindings in hosted for b in bindings if b["issuer"] != provider_id],
             "metadata": {
                 "federation_entity": {"organization_name": name, "homepage_uri": provider_id,
                                       "attestation_jwks": attester_jwks},
@@ -367,7 +372,8 @@ def provider_entity(provider_id: str, authority: str, hosted: list) -> dict:
     def agents():
         return {"publisher": provider_id,
                 "agents": [{"entity_id": entity_id, "spiffe_id": b["spiffe_id"], "trust_domain": b["trust_domain"],
-                            "published": True} for entity_id, bindings in hosted for b in bindings]}
+                            "published": True} for entity_id, bindings in hosted for b in bindings
+                           if b["issuer"] == provider_id]}
 
     return {"sign": sign, "vouch": vouch, "agents": agents, "attest": provider_attester(provider_id, hosted)}
 
@@ -376,12 +382,12 @@ def provider_attester(provider_id: str, hosted: list):
     """POST /attest - the provider attesting an instance of one of its agents itself, as CBA's provider does for
     agent-r: {client_id, instance_jwk} in, {wallet_attestation, issuer} out, signed with the attester key
     (ATTESTER_PRIVATE_FILE) that the provider's Entity Configuration publishes. PingFederate's token endpoint
-    trusts it through the provider's chain; PingFederate's own attester plays no part.
+    trusts it through the provider's chain. ATTESTER=provider on an agent picks this over PingFederate's attester.
 
     Unlike CBA's provider, which attests whatever key it is sent, this one wants the instance's workload identity
     too: "svid", a JWT-SVID addressed to the provider. It is verified against the trust domain's live keys (the
     binding's bundle_url, SPIRE's OIDC Discovery Provider) and its SPIFFE ID must be bound to client_id. Without the
-    attester's private key the provider serves no /attest (PingFederate's attester signs as it instead)."""
+    attester's private key the provider serves no /attest."""
     path = os.environ.get("ATTESTER_PRIVATE_FILE", "")
     if not path or not os.path.exists(path):
         return None
@@ -389,7 +395,7 @@ def provider_attester(provider_id: str, hosted: list):
         attester_jwk = json.load(f)
     attester_key = jwt.PyJWK(attester_jwk).key
     ttl = int(os.environ.get("PROVIDER_ATTESTATION_TTL", "3600"))
-    bindings = {(entity_id, b["spiffe_id"]): b for entity_id, bs in hosted for b in bs}
+    bindings = {(entity_id, b["spiffe_id"]): b for entity_id, bs in hosted for b in bs if b["issuer"] == provider_id}
 
     def spire_keys(binding: dict) -> jwt.PyJWKSet:
         if binding.get("bundle_url"):
@@ -434,6 +440,16 @@ def provider_attester(provider_id: str, hosted: list):
     return attest
 
 
+def attester_bindings(client_id: str, issuer: str, provider_id: str, spiffe_ids: str = None) -> list:
+    """The client's SPIFFE bindings once per attester that may attest its instances: PingFederate's own (issuer; its
+    attester checks the JWT-SVID's audience is its issuer) and, with a provider, the provider's /attest. PingFederate's
+    come first: its attester takes a client's first binding for an ID."""
+    out = spiffe_client_bindings(client_id, issuer, spiffe_ids)
+    if provider_id:
+        out += spiffe_client_bindings(client_id, provider_id, spiffe_ids)
+    return out
+
+
 def hosted_agents(provider_id: str, authority: str, issuer: str) -> list:
     """The agents this host serves: the Principal (ENTITY_ID, as ever) and, with a provider, each of HOSTED_AGENTS
     at <provider>/agent/<name> - an agent other agents call: a client and a resource (interface "agent"), CBA's
@@ -444,7 +460,7 @@ def hosted_agents(provider_id: str, authority: str, issuer: str) -> list:
         principal_jwks = json.load(f)
     agents = [{"id": require_env("ENTITY_ID"), "private": principal_private, "public": principal_public,
                "client_jwks": principal_jwks, "name": os.environ.get("CLIENT_NAME", "spire-attested-client"),
-               "bindings": spiffe_client_bindings(require_env("ENTITY_ID"), provider_id or issuer), "resource": None}]
+               "bindings": attester_bindings(require_env("ENTITY_ID"), issuer, provider_id), "resource": None}]
     capabilities = dict(pair.split("=", 1) for pair in os.environ.get("AGENT_CAPABILITIES", "").split(",") if "=" in pair)
     for name in filter(None, os.environ.get("HOSTED_AGENTS", "").replace(",", " ").split()):
         if not provider_id:
@@ -457,7 +473,8 @@ def hosted_agents(provider_id: str, authority: str, issuer: str) -> list:
         agents.append({
             "id": agent_id, "private": private, "public": public, "client_jwks": client_jwks,
             "name": f"POC {name.replace('-agent', '').title()} Agent",
-            "bindings": spiffe_client_bindings(agent_id, provider_id, f"spiffe://{os.environ.get('TRUST_DOMAIN', 'example.org')}/{name}"),
+            "bindings": attester_bindings(agent_id, issuer, provider_id,
+                                          f"spiffe://{os.environ.get('TRUST_DOMAIN', 'example.org')}/{name}"),
             "resource": {
                 "resource": agent_id, "resource_name": f"POC {name.replace('-agent', '').title()} Agent",
                 "authorization_servers": [issuer], "authorization_details_types_supported": [capability] if capability else [],
@@ -479,16 +496,18 @@ def run_entity_host() -> None:
     authority = require_env("AUTHORITY_HINT")
     server = directory_server()
     issuer = server["Issuer"]
-    # With an agent provider (PROVIDER_ID) the attestations are the provider's: it signs them itself (/attest), with
-    # the key its Entity Configuration publishes, and PingFederate's token endpoint trusts that key through the
-    # provider's chain to Raidiam's anchor.
+    # Each agent's instances are attested by PingFederate's own attester (/federation/attestation), which reads their
+    # bindings from the provider's Entity Configuration and signs with the key PingFederate's own Entity Configuration
+    # publishes; or, with an agent provider (PROVIDER_ID), by the provider itself (/attest), with the key its Entity
+    # Configuration publishes. Either way PingFederate's token endpoint trusts the attester through its chain to
+    # Raidiam's anchor.
     provider_id = os.environ.get("PROVIDER_ID", "").rstrip("/")
     agents = hosted_agents(provider_id, authority, issuer)
     for ag in agents:
         print(f"entity host: client {ag['id']}, SPIFFE binding(s) "
-              + ", ".join(b["spiffe_id"] for b in ag["bindings"])
+              + ", ".join(dict.fromkeys(b["spiffe_id"] for b in ag["bindings"]))
               + (f", resource for {ag['resource']['authorization_details_types_supported']}" if ag["resource"] else "")
-              + f"; attestations issued as {provider_id or issuer}", flush=True)
+              + f"; attested by {' or '.join(dict.fromkeys(b['issuer'] for b in ag['bindings']))}", flush=True)
 
     def signer(ag):
         def sign(audience=None):

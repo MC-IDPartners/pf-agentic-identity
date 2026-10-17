@@ -1,9 +1,7 @@
 #!/usr/bin/env bash
-# The two files docker-compose.raidiam.yml mounts into the running PingFederate, rendered for one issuer into
+# The files docker-compose.raidiam.yml mounts into the running PingFederate, rendered for one issuer into
 # keys/raidiam/runtime/ (git-ignored):
 #
-#   mock-attesters.json        {<issuer>: <attester's public JWKS>} - the attester PingFederate's token endpoint
-#                              trusts with no federation chain (oidf.mock.attesters; development only).
 #   bridge-signing-keys.json   {<client>: {jwk: <bridge private JWK>, attesters: [<issuer>]}} - the bridge key
 #                              per attested client (OIDF_BRIDGE_SIGNING_KEYS, OIDF_BRIDGE_SIGNER_BACKING=config),
 #                              and the attesters that client's attestations may come from.
@@ -20,16 +18,17 @@ mkdir -p "$KEYS/runtime"; chmod 700 "$KEYS/runtime"
   ISSUER="$ISSUER" CLIENT="$CLIENT" KEYS="$KEYS" ATTESTED="${RAIDIAM_ATTESTED_CLIENT_ID:-}" PROVIDER="${RAIDIAM_PROVIDER_ID:-}" HOSTED="${RAIDIAM_HOSTED_AGENTS:-}" node -e '
     const fs = require("fs"), k = process.env.KEYS, iss = process.env.ISSUER.replace(/\/+$/, "");
     const read = f => JSON.parse(fs.readFileSync(`${k}/${f}`, "utf8"));
-    fs.writeFileSync(`${k}/runtime/mock-attesters.json`, JSON.stringify({ [iss]: read("attester-signing.public.jwks.json") }));
     const bridges = { [process.env.CLIENT]: { jwk: read(`bridge-${process.env.CLIENT}.private.jwk.json`), attesters: [iss] } };
-    // The federated attested client (attested-client.sh), when RAIDIAM_ATTESTED_CLIENT_ID names it; its attestations
-    // come from the agent provider (provider.sh) when RAIDIAM_PROVIDER_ID names one, else from PingFederate.
+    // The federated attested client (attested-client.sh), when RAIDIAM_ATTESTED_CLIENT_ID names it, and the agents
+    // of the provider: attested by the attester PingFederate co-hosts or, with RAIDIAM_PROVIDER_ID (provider.sh), by the provider -
+    // either trusted through its federation chain.
     const provider = process.env.PROVIDER.replace(/\/+$/, "");
-    if (process.env.ATTESTED) bridges[process.env.ATTESTED] = { jwk: read("attested-client/bridge.private.jwk.json"), attesters: [provider || iss] };
+    const attesters = provider ? [iss, provider] : [iss];
+    if (process.env.ATTESTED) bridges[process.env.ATTESTED] = { jwk: read("attested-client/bridge.private.jwk.json"), attesters };
     // The provider sub-agents (RAIDIAM_HOSTED_AGENTS): <provider>/agent/<name>, their keys under agents/<name>/.
     for (const name of process.env.HOSTED.split(/[\s,]+/).filter(Boolean)) {
       if (!provider) throw new Error("RAIDIAM_HOSTED_AGENTS needs RAIDIAM_PROVIDER_ID");
-      bridges[`${provider}/agent/${name}`] = { jwk: read(`agents/${name}/bridge.private.jwk.json`), attesters: [provider] };
+      bridges[`${provider}/agent/${name}`] = { jwk: read(`agents/${name}/bridge.private.jwk.json`), attesters };
     }
     fs.writeFileSync(`${k}/runtime/bridge-signing-keys.json`, JSON.stringify(bridges));
   ' )
@@ -59,5 +58,5 @@ rm -f "$KEYS/runtime/truststore.p12"
 "$KEYTOOL" "${UNPROTECTED[@]}" -importcert -noprompt -alias pf-agentic-identity-rig-ca -file "$HERE/keys/pf-runtime-tls-ca.crt" \
   -keystore "$KEYS/runtime/truststore.p12" -storetype PKCS12 -storepass changeit >/dev/null
 # PingFederate reads them as its own user; the directory stays 0700 on the host.
-chmod 644 "$KEYS/runtime/mock-attesters.json" "$KEYS/runtime/bridge-signing-keys.json" "$KEYS/runtime/truststore.p12"
+chmod 644 "$KEYS/runtime/bridge-signing-keys.json" "$KEYS/runtime/truststore.p12"
 echo "rendered  keys/raidiam/runtime/ for issuer $ISSUER"
