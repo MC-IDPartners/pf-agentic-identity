@@ -18,6 +18,8 @@ Stages, each a pass, a fail or a skip in the report:
                a request is built; the resource refuses a call with no token
   gateway      with the agent's own token (probe.py): a forged token is refused at the gateway; the PDP permits
                get_balance; the PDP denies a large payment (COAZ -32401) before it reaches the resource
+  signals      Shared Signals (PROBE=ssf): session-revoked refuses the agent's existing token at the gateway but not a
+               new one; account-disabled refuses every token; account-enabled lifts it - each within seconds
 
 Standard library only; it shells out to docker and docker compose, and runs in-network checks inside the provider's
 container. The provisioning stages - an agent registered through the marketplace, its keys certified, the provider
@@ -266,6 +268,39 @@ def gateway(rep: Report, a):
                err.get("code") == -32401, f"HTTP {deny.get('http')}, {err.get('code')}: {(err.get('message') or '')[:80]}")
 
 
+def signals(rep: Report, a):
+    """Shared Signals: PingFederate's transmitter, the PEP's stream (probe.py PROBE=ssf). The probe raises the events
+    as the transmitter's operator (conformance-ssf-emitter), whose secret comes from ../secrets.env."""
+    print("\nsignals", flush=True)
+    secret = next((l.split("=", 1)[1].strip() for l in open(os.path.join(DEMO, "secrets.env"))
+                   if l.startswith("TF_VAR_ssf_emitter_client_secret=")), "")
+    if not secret:
+        rep.add("signals", "Shared Signals", "skip", "no TF_VAR_ssf_emitter_client_secret in secrets.env")
+        return
+    out = subprocess.run(["docker", "compose", "run", "--rm", "-l", f"app={a.label}", "-e", "PROBE=ssf", "-e", "EMIT_SECRET",
+                          "--entrypoint", "python", "agent", "probe.py"], cwd=HERE, capture_output=True, text=True,
+                         encoding="utf-8", errors="replace", timeout=600,
+                         env={**ENV, "EMIT_SECRET": secret, "ATTESTED_CLIENT_ID": a.agent,
+                              "RAIDIAM_PROVIDER_ID": a.provider, "RAIDIAM_RESOURCE_ID": a.resource})
+    line = next((l for l in out.stdout.splitlines() if l.startswith("PROBE ")), None)
+    if not line:
+        rep.expect("signals", "the probe ran", False, " | ".join((out.stdout + out.stderr).strip().splitlines()[-3:]))
+        return
+    p = json.loads(line[len("PROBE "):])
+    fast = lambda s: s is not None and s <= 10
+    rep.expect("signals", "the agent's call works before any signal", p.get("before") == 200, f"HTTP {p.get('before')}")
+    rep.expect("signals", "session-revoked: its existing token is refused at the gateway",
+               p.get("session_revoked_streams", 0) >= 1 and fast(p.get("old_token_refused_after_s")),
+               f"{p.get('session_revoked_streams')} stream(s), refused after {p.get('old_token_refused_after_s')} s")
+    rep.expect("signals", "session-revoked: a token issued after it still works",
+               p.get("new_token_after_session_revoked") == 200, f"HTTP {p.get('new_token_after_session_revoked')}")
+    rep.expect("signals", "account-disabled: even a fresh token is refused",
+               fast(p.get("disabled_refused_after_s")) and p.get("fresh_token_while_disabled") == 401,
+               f"refused after {p.get('disabled_refused_after_s')} s, fresh token HTTP {p.get('fresh_token_while_disabled')}")
+    rep.expect("signals", "account-enabled: the agent works again", fast(p.get("enabled_ok_after_s")),
+               f"after {p.get('enabled_ok_after_s')} s")
+
+
 def cleanup(a):
     for kind, what in reversed(a.created):
         if kind == "spire":
@@ -303,6 +338,7 @@ def main():
             if not a.skip_negatives:
                 negatives(rep, a)
                 gateway(rep, a)
+                signals(rep, a)
     finally:
         if not a.keep:
             cleanup(a)

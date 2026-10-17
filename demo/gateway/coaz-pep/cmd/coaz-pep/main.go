@@ -18,6 +18,9 @@ package main
 //   PDP_TLS_INSECURE     "true" to skip PDP TLS verification (demo only)
 //   TOKEN_JWKS_URL, TOKEN_ISSUER, TOKEN_AUDIENCE, TOKEN_CA_FILE, TOKEN_TYP
 //                        verify access tokens before deciding (verify.go); unset, they are only decoded
+//   SSF_CONFIGURATION_URL, SSF_CONNECT_BASE, SSF_TOKEN_ENDPOINT, SSF_TOKEN_AUDIENCE, SSF_CLIENT_ID,
+//   SSF_CLIENT_KEY_FILE, SSF_POLL_SECONDS
+//                        a Shared Signals stream whose revocations refuse tokens at once (ssf.go)
 
 import (
 	"crypto/tls"
@@ -65,8 +68,17 @@ func main() {
 		log.Printf("coaz-pep does NOT verify access tokens (TOKEN_JWKS_URL unset): claims are decoded only")
 	}
 
+	signals, err := newSSFReceiver(tokens)
+	if err != nil {
+		log.Fatal(err)
+	}
+	if signals != nil {
+		go signals.run()
+	}
+
 	srv := &server{
 		tokens:        tokens,
+		signals:       signals,
 		authzenURL:    authzenURL,
 		authzenAPIKey: os.Getenv("AUTHZEN_API_KEY"),
 		httpc:         httpc,

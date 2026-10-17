@@ -134,6 +134,14 @@ func publicKey(j map[string]any) (any, error) {
 
 // verify checks the token's signature, type, issuer, audience and lifetime; the error says which failed.
 func (v *tokenVerifier) verify(token string) error {
+	if err := v.verifySignature(token, v.typ); err != nil {
+		return err
+	}
+	return v.verifyClaims(jwtClaims(token))
+}
+
+// verifySignature checks a compact JWS's typ (when typ is not "") and its signature against the JWKS.
+func (v *tokenVerifier) verifySignature(token, typ string) error {
 	parts := strings.Split(token, ".")
 	if len(parts) != 3 {
 		return errors.New("not a compact JWS")
@@ -144,8 +152,8 @@ func (v *tokenVerifier) verify(token string) error {
 	}
 	alg, _ := header["alg"].(string)
 	kid, _ := header["kid"].(string)
-	if typ, _ := header["typ"].(string); v.typ != "" && !strings.EqualFold(strings.TrimPrefix(strings.ToLower(typ), "application/"), v.typ) {
-		return fmt.Errorf("typ %q is not %s", typ, v.typ)
+	if got, _ := header["typ"].(string); typ != "" && !strings.EqualFold(strings.TrimPrefix(strings.ToLower(got), "application/"), typ) {
+		return fmt.Errorf("typ %q is not %s", got, typ)
 	}
 	key, err := v.key(kid)
 	if err != nil {
@@ -177,8 +185,10 @@ func (v *tokenVerifier) verify(token string) error {
 	if err != nil {
 		return fmt.Errorf("signature does not verify with key %q", kid)
 	}
+	return nil
+}
 
-	claims := jwtClaims(token)
+func (v *tokenVerifier) verifyClaims(claims map[string]any) error {
 	if iss, _ := claims["iss"].(string); iss != v.issuer {
 		return fmt.Errorf("iss %q is not %s", iss, v.issuer)
 	}

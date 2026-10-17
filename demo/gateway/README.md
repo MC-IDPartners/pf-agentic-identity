@@ -32,7 +32,7 @@ From `spire-workload/`, with the rest of the rig up (`../raidiam/README.md`, "Th
 
 ```bash
 docker compose up -d rs-accounts pingauthorize coaz-pep gateway   # PingAuthorize takes a minute on first start
-python harness.py                                                  # 26 checks, the gateway's among them
+python harness.py                                                  # 31 checks: the gateway's and the signals' among them
 ```
 
 PingAuthorize fetches a DevOps evaluation licence on start from `~/.pingidentity/config`
@@ -40,6 +40,31 @@ PingAuthorize fetches a DevOps evaluation licence on start from `~/.pingidentity
 
 Decisions are in coaz-pep's log (`docker compose logs -f coaz-pep`): `COAZ PERMIT tools/call get_balance ...`,
 `COAZ DENY tools/call pay_supplier: Access denied`, `token refused: ...`.
+
+## Shared Signals
+
+coaz-pep is also a Shared Signals receiver (`coaz-pep/cmd/coaz-pep/ssf.go`): it polls a stream from PingFederate's
+SSF transmitter (RFC 8936 poll, so nothing has to reach the PEP) as `rig-pep-ssf-receiver` (`../terraform/ssf-pep.tf`;
+private_key_jwt with `keys/gateway/pep-ssf.*` from `gen-keys.sh`, scope `ssf.manage`), verifies each SET against
+PingFederate's JWKS, and refuses tokens at once:
+
+| Event about an agent | Effect at the PEP |
+|---|---|
+| CAEP `session-revoked` | its tokens issued at or before the event are refused; a token issued after it works |
+| RISC `account-disabled` | every token refused, until |
+| RISC `account-enabled` | lifts it |
+
+Subjects are `iss_sub` - `iss` PingFederate, `sub` the agent's `client_id`, as in its tokens - or `opaque` (the
+`client_id`). `session-revoked` needs the token's `iat`, which PingFederate's token manager leaves out unless told
+(`Include Issued At Claim`, `../terraform/resource.tf`); a token without one is refused, the safe way round.
+
+Without it, a withdrawn agent keeps working until the resource's cache (300 s) and its registration at PingFederate
+(about 20 minutes) run out - Raidiam cannot push into the network. With it the gateway refuses within a poll, about
+two seconds (harness stage `signals`; events raised through PingFederate's `/ssf/events:emit`).
+
+Next transmitters: the agent provider (an instance it stops attesting) and the marketplace (an agent it suspends) -
+both inside the network. Revoking one instance rather than the agent needs instance-bound tokens (`cnf`), which these
+are not yet.
 
 ## The policy, for now
 

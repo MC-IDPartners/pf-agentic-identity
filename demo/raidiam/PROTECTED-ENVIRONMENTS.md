@@ -61,7 +61,10 @@ resolution:
 | An explicit registration at PingFederate | until its chain expires, about 20 minutes |
 | A resource server's membership check (`rs_accounts.py`) | up to 300 s, or the chain's expiry if sooner |
 
-Plan for polling, or shorter cache lifetimes.
+Plan for polling, or shorter cache lifetimes - or signal inside the network: the gateway's PEP receives Shared
+Signals from PingFederate's transmitter and refuses a revoked or disabled agent within about two seconds
+(`../gateway/README.md`, "Shared Signals"). The transmitters that know - the provider, the marketplace - are inside
+the network too.
 
 ## Workable, but to fix for production
 

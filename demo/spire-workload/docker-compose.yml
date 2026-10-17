@@ -211,8 +211,17 @@ services:
       TOKEN_ISSUER: ${PF_BASE_URL:-https://bottle-platonic-parted.ngrok-free.dev}
       TOKEN_AUDIENCE: ${RAIDIAM_RESOURCE_ID:-https://host.docker.internal:8446}
       TOKEN_CA_FILE: /certs/pf-runtime-tls-ca.crt
+      # Shared Signals: a poll stream from PingFederate's transmitter, as rig-pep-ssf-receiver (../terraform/ssf-pep.tf).
+      # A session-revoked or account-disabled about an agent refuses its tokens here within a poll.
+      SSF_CONFIGURATION_URL: https://host.docker.internal:${PF_PORT_HTTPS:-9031}/.well-known/ssf-configuration
+      SSF_CONNECT_BASE: https://host.docker.internal:${PF_PORT_HTTPS:-9031}
+      SSF_TOKEN_ENDPOINT: https://host.docker.internal:${PF_PORT_HTTPS:-9031}/as/token.oauth2
+      SSF_CLIENT_ID: rig-pep-ssf-receiver
+      SSF_CLIENT_KEY_FILE: /keys/pep-ssf.private.jwk.json
+      SSF_POLL_SECONDS: "2"
     volumes:
       - ../keys/pf-runtime-tls-ca.crt:/certs/pf-runtime-tls-ca.crt:ro
+      - ../keys/gateway/pep-ssf.private.jwk.json:/keys/pep-ssf.private.jwk.json:ro
     depends_on: [pingauthorize]
 
   # The policy decision point: PingAuthorize 11.1, its embedded PDP behind the AuthZEN servlet. Not published on the

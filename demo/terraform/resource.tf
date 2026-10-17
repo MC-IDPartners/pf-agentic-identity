@@ -29,6 +29,9 @@ resource "pingfederate_oauth_access_token_manager" "rs_accounts" {
       # The resource checks that a token is meant for it.
       { name = "Audience Claim Value", value = var.rs_accounts_resource },
       { name = "Type Header Value", value = "at+jwt" },
+      # iat: a Shared Signals session-revoked refuses the tokens issued before it (../gateway/README.md), so a
+      # token has to say when it was issued; without it the PEP refuses every token of a revoked agent.
+      { name = "Include Issued At Claim", value = "true" },
     ]
     tables = []
   }

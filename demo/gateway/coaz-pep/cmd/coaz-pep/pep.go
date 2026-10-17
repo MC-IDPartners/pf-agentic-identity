@@ -88,6 +88,7 @@ type server struct {
 	httpc         *http.Client
 	coaz          *coaz.Engine
 	tokens        *tokenVerifier // nil: tokens are decoded, not verified (the upstream demo's behaviour)
+	signals       *ssfReceiver   // nil: no Shared Signals stream
 }
 
 // ---------- CheckResponse builders ----------
@@ -220,6 +221,12 @@ func (s *server) check(ctx context.Context, conf pepConfig, method, path string,
 	}
 
 	claims := jwtClaims(token)
+	// A Shared Signals revocation for this agent (ssf.go): refused before anything else is asked.
+	if why, refused := s.signals.refused(claims); refused {
+		log.Printf("[%s] token refused by a signal: %s", pep, why)
+		return denySimple(pep, typev3.StatusCode_Unauthorized, codes.Unauthenticated,
+			"Access token revoked: "+why, map[string]string{"WWW-Authenticate": `Bearer error="invalid_token"`})
+	}
 	sub := claimString(claims, "sub")
 	act := actorSub(claims)
 	scope := scopeString(claims)
