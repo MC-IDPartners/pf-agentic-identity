@@ -188,6 +188,53 @@ def get_balance(account_id: str) -> dict:
     return {**account, "available": account["balance"], "decision": {"resource": RESOURCE_ID, **(caller.get() or {})}}
 
 
+@mcp.tool()
+def pay_supplier(from_account: str, to_account: str, amount: float, currency: str = "AUD") -> dict:
+    """Pays a supplier from one of the business accounts. Governed at the gateway: the PDP decides on the amount."""
+    if not any(a["account_id"] == from_account for a in ACCOUNTS):
+        return {"error": f"no account {from_account}"}
+    return {"status": "accepted", "from_account": from_account, "to_account": to_account, "amount": amount,
+            "currency": currency, "decision": {"resource": RESOURCE_ID, **(caller.get() or {})}}
+
+
+# COAZ (the OpenID AuthZEN MCP profile): each tool says how a call maps to an AuthZEN evaluation, so a gateway PEP
+# (../gateway/coaz-pep) can ask the PDP before the call reaches this server. String leaves are CEL over `params` (the
+# tools/call params) and `token` (the access token's claims). The agent acts as itself, so the subject is its client_id.
+# token_aud is left out on purpose: the PDP's banking package denies any audience but its own demo's.
+from mcp import types as mcp_types  # noqa: E402
+
+_AGENT = "has(token.client_id) ? token.client_id : (has(token.sub) ? token.sub : 'unknown-agent')"
+_SUBJECT = [{"type": "'agent'", "identity": _AGENT,
+             "properties": {"client_id": _AGENT, "agent_type": "'ai_assistant'",
+                            "on_behalf_of": "has(token.sub) ? token.sub : ''"}}]
+_CONTEXT = [{"channel": "'ai-agent'", "agent": _AGENT, "resource_server": f"'{RESOURCE_ID}'"}]
+COAZ_MAPPINGS = {
+    "list_accounts": {"subject": _SUBJECT, "action": [{"name": "'list_accounts'"}],
+                      "resource": [{"type": "'customer'", "id": "'business'"}], "context": _CONTEXT},
+    "get_balance": {"subject": _SUBJECT, "action": [{"name": "'get_balance'"}],
+                    "resource": [{"type": "'account'", "id": "params.arguments.account_id"}], "context": _CONTEXT},
+    # The PDP's own decision: the banking package denies a payment over 2000 outright.
+    "pay_supplier": {"subject": _SUBJECT, "action": [{"name": "'make_payment'"}],
+                     "resource": [{"type": "'account'", "id": "params.arguments.from_account",
+                                   "properties": {"from_account": "params.arguments.from_account",
+                                                  "to_account": "params.arguments.to_account"}}],
+                     "context": [{**_CONTEXT[0], "amount": "params.arguments.amount",
+                                  "currency": "has(params.arguments.currency) ? params.arguments.currency : 'AUD'"}]},
+}
+
+
+@mcp._mcp_server.list_tools()
+async def _coaz_list_tools() -> list[mcp_types.Tool]:
+    """tools/list with each tool's COAZ declaration attached."""
+    tools = []
+    for info in mcp._tool_manager.list_tools():
+        schema, extra = dict(info.parameters), {}
+        if info.name in COAZ_MAPPINGS:
+            schema, extra = {**schema, "x-coaz-mapping": COAZ_MAPPINGS[info.name]}, {"coaz": True}
+        tools.append(mcp_types.Tool(name=info.name, description=info.description, inputSchema=schema, **extra))
+    return tools
+
+
 @mcp.custom_route("/.well-known/openid-federation", methods=["GET"])
 async def well_known_federation(request: Request) -> Response:
     return Response(entity_configuration(), media_type="application/entity-statement+jwt",

@@ -16,6 +16,8 @@ Stages, each a pass, a fail or a skip in the report:
                resource chosen; a token for this agent with aud = the resource; the call allowed
   negatives    another workload's container is refused at /attest; a job outside the envelope is refused before
                a request is built; the resource refuses a call with no token
+  gateway      with the agent's own token (probe.py): a forged token is refused at the gateway; the PDP permits
+               get_balance; the PDP denies a large payment (COAZ -32401) before it reaches the resource
 
 Standard library only; it shells out to docker and docker compose, and runs in-network checks inside the provider's
 container. The provisioning stages - an agent registered through the marketplace, its keys certified, the provider
@@ -101,7 +103,7 @@ def preflight(rep: Report, a) -> bool:
         for row in item if isinstance(item, list) else [item]:
             if row.get("State") == "running":
                 running.add(row.get("Service"))
-    for svc in ("entity-host", "spire-oidc", "rs-accounts"):
+    for svc in ("entity-host", "spire-oidc", "rs-accounts", "gateway", "coaz-pep", "pingauthorize"):
         rep.expect("preflight", f"{svc} is running", svc in running,
                    "" if svc in running else f"docker compose up -d {svc}")
     if "entity-host" not in running:
@@ -230,11 +232,38 @@ def negatives(rep: Report, a):
 
     try:
         out = in_network("import requests,os;print(requests.post('" + a.resource + "/mcp/v1',json={},"
-                         "verify=os.environ['PF_CA_FILE']).status_code)")
+                         "verify=os.environ['PF_CA_FILE']).status_code)")  # the gateway answers now
         rep.expect("negatives", "the resource refuses a call with no token", out == "401", out)
     except Exception as e:
         rep.expect("negatives", "the resource refuses a call with no token", False, str(e))
     rep.add("negatives", "a suspended agent is refused", "skip", "needs the marketplace on the live control plane")
+
+
+def gateway(rep: Report, a):
+    """The gateway in front of the resource, and the PDP behind it, probed with the agent's own token (probe.py)."""
+    print("\ngateway", flush=True)
+    out = compose("run", "--rm", "-l", f"app={a.label}", "--entrypoint", "python", "agent", "probe.py",
+                  env={"ATTESTED_CLIENT_ID": a.agent, "RAIDIAM_PROVIDER_ID": a.provider, "RAIDIAM_RESOURCE_ID": a.resource})
+    probes = {}
+    for line in out.stdout.splitlines():
+        if line.startswith("PROBE "):
+            p = json.loads(line[len("PROBE "):])
+            probes[p["name"]] = p
+    if not probes:
+        tail = (out.stdout + out.stderr).strip().splitlines()[-3:]
+        rep.expect("gateway", "probes ran", False, " | ".join(tail))
+        return
+    f = probes.get("forged_token", {})
+    rep.expect("gateway", "a token not signed by PingFederate is refused at the gateway", f.get("http") == 401,
+               f"HTTP {f.get('http')}")
+    ok = probes.get("pdp_permit", {})
+    rep.expect("gateway", "the PDP permits get_balance and the call reaches the resource",
+               ok.get("http") == 200 and not ok.get("jsonrpc_error") and bool(ok.get("result")),
+               f"HTTP {ok.get('http')}, error {ok.get('jsonrpc_error')}")
+    deny = probes.get("pdp_deny_large_payment", {})
+    err = deny.get("jsonrpc_error") if isinstance(deny.get("jsonrpc_error"), dict) else {"message": str(deny.get("jsonrpc_error"))}
+    rep.expect("gateway", "the PDP denies a 5000 payment (COAZ -32401) before it reaches the resource",
+               err.get("code") == -32401, f"HTTP {deny.get('http')}, {err.get('code')}: {(err.get('message') or '')[:80]}")
 
 
 def cleanup(a):
@@ -273,6 +302,7 @@ def main():
             result = run(rep, a)
             if not a.skip_negatives:
                 negatives(rep, a)
+                gateway(rep, a)
     finally:
         if not a.keep:
             cleanup(a)

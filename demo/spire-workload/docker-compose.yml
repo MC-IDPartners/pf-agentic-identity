@@ -154,12 +154,14 @@ services:
   # The agent-r flow's resource: an MCP server in the protected network, a federation entity of its own (its own
   # Raidiam software statement, RAIDIAM_RESOURCE_ID; key from ../raidiam/resource.sh), protected by PingFederate.
   #   docker compose up -d rs-accounts
+  #
+  # It sits behind the gateway (below): the gateway listens at its identifier, https://host.docker.internal:8446, and
+  # this serves plain HTTP inside the compose network only. It still makes its own checks - token, federation
+  # membership, capability - should anything reach it past the gateway.
   rs-accounts:
     build: .
     command: ["python", "rs_accounts.py"]
     restart: unless-stopped
-    ports:
-      - "8446:8446"
     environment:
       RESOURCE_ID: ${RAIDIAM_RESOURCE_ID:-https://host.docker.internal:8446}
       RESOURCE_KEY_FILE: /keys/entity.private.jwk.json
@@ -171,15 +173,55 @@ services:
       ISSUER_HOST_OVERRIDE: host.docker.internal:${PF_PORT_HTTPS:-9031}
       REQUIRED_CAPABILITY: accounts_read
       PF_CA_FILE: /certs/pf-runtime-tls-ca.crt
-      # The rig CA's certificate for host.docker.internal (the entity host's).
-      RESOURCE_TLS_CERT: /tls/entity-host-tls.crt
-      RESOURCE_TLS_KEY: /tls/entity-host-tls.key
+      RESOURCE_LISTEN_PORT: "8446"
+      # The PEP reads tools/list from here by its compose name; the gateway rewrites Host to rs-accounts.
+      RESOURCE_ALLOWED_HOSTS: rs-accounts:8446,rs-accounts
     volumes:
       - ../keys/pf-runtime-tls-ca.crt:/certs/pf-runtime-tls-ca.crt:ro
       - ../vars.raidiam.env:/fed/vars.raidiam.env:ro
       - ../keys/raidiam/rs-accounts:/keys:ro
-      - ../keys/raidiam/attested-client/entity-host-tls.crt:/tls/entity-host-tls.crt:ro
-      - ../keys/raidiam/attested-client/entity-host-tls.key:/tls/entity-host-tls.key:ro
+
+  # The gateway in front of rs-accounts (../gateway/README.md): agentgateway, at the resource's identifier, asks the PEP
+  # about every MCP request; only then does a call reach the resource.
+  gateway:
+    build: ../gateway/agentgateway
+    restart: unless-stopped
+    ports:
+      - "8446:8446"
+    environment:
+      RESOURCE_ID: ${RAIDIAM_RESOURCE_ID:-https://host.docker.internal:8446}
+      RESOURCE_HOST: rs-accounts:8446
+      EXTAUTHZ_HOST: coaz-pep:9191
+    volumes:
+      - ../keys/raidiam/attested-client/entity-host-tls.crt:/tls/tls.crt:ro
+      - ../keys/raidiam/attested-client/entity-host-tls.key:/tls/tls.key:ro
+      - ../keys/pf-runtime-tls-ca.crt:/usr/local/share/ca-certificates/pf-runtime-tls-ca.crt:ro
+    depends_on: [rs-accounts, coaz-pep]
+
+  # The policy enforcement point (vendored from idp-agentic-demo): Envoy ext_authz for the gateway. It verifies the
+  # access token (PingFederate's JWKS, fetched inside the network), then for an MCP tools/call reads the tool's
+  # x-coaz-mapping and asks the PDP an AuthZEN question. Fails closed.
+  coaz-pep:
+    build: ../gateway/coaz-pep
+    restart: unless-stopped
+    environment:
+      AUTHZEN_URL: http://pingauthorize:1080
+      AUTHZEN_API_KEY: rig-authzen-dev-key
+      TOKEN_JWKS_URL: https://host.docker.internal:${PF_PORT_HTTPS:-9031}/pf/JWKS
+      TOKEN_ISSUER: ${PF_BASE_URL:-https://bottle-platonic-parted.ngrok-free.dev}
+      TOKEN_AUDIENCE: ${RAIDIAM_RESOURCE_ID:-https://host.docker.internal:8446}
+      TOKEN_CA_FILE: /certs/pf-runtime-tls-ca.crt
+    volumes:
+      - ../keys/pf-runtime-tls-ca.crt:/certs/pf-runtime-tls-ca.crt:ro
+    depends_on: [pingauthorize]
+
+  # The policy decision point: PingAuthorize 11.1, its embedded PDP behind the AuthZEN servlet. Not published on the
+  # host. Takes a few minutes to set up on first start (licence fetch, server profile).
+  pingauthorize:
+    build: ../gateway/pingauthorize
+    restart: unless-stopped
+    env_file:
+      - path: ${PING_DEVOPS_CONFIG:-${HOME}/.pingidentity/config}
 
 volumes:
   agent-state:
