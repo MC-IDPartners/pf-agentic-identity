@@ -9,15 +9,16 @@
 #                                     a CSR for it, for software statement <ssid> to certify; <subject prefix>
 #                                     defaults to /C=GB/O=CBA Trust Framework/OU=CBA-123
 #
-# Keys under keys/raidiam/rs-accounts/ (git-ignored). Idempotent: an existing key is kept.
+# Keys under ${DIR#$HERE/}/ (git-ignored). Idempotent: an existing key is kept.
 set -euo pipefail
 export MSYS2_ARG_CONV_EXCL="/C=;/CN="
 HERE="$(cd "$(dirname "$0")/.." && pwd)"
-DIR="$HERE/keys/raidiam/rs-accounts"
+# RESOURCE=<name> (default rs-accounts): keys/raidiam/<name>/, one directory per resource server.
+DIR="$HERE/keys/raidiam/${RESOURCE:-rs-accounts}"
 mkdir -p "$DIR"; chmod 700 "$DIR"
 
 keys() {
-  if [[ -f "$DIR/entity.private.jwk.json" ]]; then echo "kept      keys/raidiam/rs-accounts/entity.*"; return; fi
+  if [[ -f "$DIR/entity.private.jwk.json" ]]; then echo "kept      ${DIR#$HERE/}/entity.*"; return; fi
   ( umask 177
     # shellcheck disable=SC2016
     KEYS_DIR="$DIR" node -e '
@@ -35,7 +36,7 @@ keys() {
   chmod 644 "$DIR/entity.public.jwks.json"
   # The container reads the key as its own user.
   chmod 644 "$DIR/entity.private.jwk.json"
-  echo "generated keys/raidiam/rs-accounts/entity.*"
+  echo "generated ${DIR#$HERE/}/entity.*"
 }
 
 csr() {
@@ -43,7 +44,7 @@ csr() {
   local prefix="${2:-/C=GB/O=CBA Trust Framework/OU=CBA-123}"
   [[ -f "$DIR/entity.key.pem" ]] || { echo "ERROR: no entity key - run $0 keys" >&2; exit 1; }
   openssl req -new -key "$DIR/entity.key.pem" -subj "$prefix/CN=$ssid" -sha256 -out "$DIR/entity-$ssid.csr"
-  echo "wrote     keys/raidiam/rs-accounts/entity-$ssid.csr  (upload as an rtssigning key)"
+  echo "wrote     ${DIR#$HERE/}/entity-$ssid.csr  (upload as an rtssigning key)"
 }
 
 case "${1:-}" in

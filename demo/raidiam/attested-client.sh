@@ -4,7 +4,8 @@
 # (OIDF_ATTESTER_FEDERATION_ENTITY) instead of from a client PingFederate holds. See README.md, "Attestation from a
 # federation entity".
 #
-#   raidiam/attested-client.sh keys          the client's federation entity key and its bridge key (RSA 2048, as
+#   [AGENT=<name>] raidiam/attested-client.sh keys
+#                                            the client's federation entity key and its bridge key (RSA 2048, as
 #                                            Raidiam certifies rtssigning keys), and the entity host's TLS
 #                                            certificate from the rig's runtime CA
 #   raidiam/attested-client.sh csr <ssid> [<subject prefix>]
@@ -15,12 +16,15 @@
 set -euo pipefail
 export MSYS2_ARG_CONV_EXCL="/C=;/CN="
 HERE="$(cd "$(dirname "$0")/.." && pwd)"
-DIR="$HERE/keys/raidiam/attested-client"
+# AGENT=<name> keeps another agent's keys apart, under keys/raidiam/agents/<name>/ (the provider hosts several);
+# unset, the Principal's, under keys/raidiam/attested-client/.
+DIR="$HERE/keys/raidiam/${AGENT:+agents/$AGENT}"
+[[ -n "${AGENT:-}" ]] || DIR="$HERE/keys/raidiam/attested-client"
 mkdir -p "$DIR"; chmod 700 "$DIR"
 
 keys() {
   for name in entity bridge; do
-    if [[ -f "$DIR/$name.private.jwk.json" ]]; then echo "kept      keys/raidiam/attested-client/$name.*"; continue; fi
+    if [[ -f "$DIR/$name.private.jwk.json" ]]; then echo "kept      ${DIR#$HERE/}/$name.*"; continue; fi
     ( umask 177
       # shellcheck disable=SC2016
       KEY_NAME="$name" KEYS_DIR="$DIR" node -e '
@@ -36,10 +40,11 @@ keys() {
         fs.writeFileSync(`${dir}/${name}.public.jwks.json`, JSON.stringify({ keys: [{ ...pub, ...meta }] }));
       ' )
     chmod 644 "$DIR/$name.public.jwks.json"
-    echo "generated keys/raidiam/attested-client/$name.*"
+    echo "generated ${DIR#$HERE/}/$name.*"
   done
-  # The entity host's certificate, from the rig's runtime CA, which PingFederate already trusts (runtime-tls.tf).
-  if [[ ! -f "$DIR/entity-host-tls.crt" ]]; then
+  # The entity host's certificate, from the rig's runtime CA, which PingFederate already trusts (runtime-tls.tf):
+  # one for the host, kept with the Principal's keys.
+  if [[ -z "${AGENT:-}" && ! -f "$DIR/entity-host-tls.crt" ]]; then
     CA="$HERE/keys/pf-runtime-tls-ca"
     [[ -f "$CA.key" ]] || { echo "ERROR: no keys/pf-runtime-tls-ca.key - run ../gen-keys.sh (up.sh does)" >&2; exit 1; }
     ( cd "$DIR" && umask 177
@@ -60,7 +65,7 @@ csr() {
   for name in entity bridge; do
     [[ -f "$DIR/$name.key.pem" ]] || { echo "ERROR: no $name key - run $0 keys" >&2; exit 1; }
     openssl req -new -key "$DIR/$name.key.pem" -subj "$prefix/CN=$ssid" -sha256 -out "$DIR/$name-$ssid.csr"
-    echo "wrote     keys/raidiam/attested-client/$name-$ssid.csr  (upload as an rtssigning key)"
+    echo "wrote     ${DIR#$HERE/}/$name-$ssid.csr  (upload as an rtssigning key)"
   done
 }
 
