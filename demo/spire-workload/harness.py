@@ -231,7 +231,7 @@ def negatives(rep: Report, a):
                r.get("outcome") == "refused" and r.get("refused_at") == "attest" and att.get("status") == 403,
                f"{att.get('spiffe_id')}: {r.get('reason', '')[:90]}")
 
-    r = run_agent(a, "pay-supplier", a.label)
+    r = run_agent(a, "loan-balance", a.label)
     rep.expect("negatives", "a job outside the envelope is refused before a request",
                r.get("outcome") == "refused" and r.get("refused_at") == "envelope", (r.get("reason") or "")[:110])
 

@@ -11,8 +11,9 @@ ENV PING_IDENTITY_ACCEPT_EULA=YES
 ENV MAX_HEAP_SIZE=1g
 
 COPY --chown=9031:0 pd.profile /opt/in/pd.profile
-# The policy: banking.deploymentpackage, exported from the PAP (digest-sealed; regenerate it there, never by hand).
-COPY --chown=9031:0 banking.deploymentpackage /opt/in/banking.deploymentpackage
+# The policy: rig.deploymentpackage, authored in the PAP (pingauthorize-pap) through its API and exported by
+# author-policy.py - digest-sealed, so it is regenerated there, never edited by hand.
+COPY --chown=9031:0 rig.deploymentpackage /opt/in/rig.deploymentpackage
 
 # The AuthZEN servlet, installed into the product bits (installing it through the server profile fails on 11.1:
 # setup aborts with "Server Already Configured"). The whole tree is chowned after: the start-up hooks copy it as

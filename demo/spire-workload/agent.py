@@ -44,9 +44,11 @@ JOBS = {
     "list-accounts": {"label": "Accounts API", "capability": "accounts_read", "tool": "list_accounts", "args": {}},
     "get-balance": {"label": "Funding account balance", "capability": "accounts_read", "tool": "get_balance",
                     "args": {"account_id": "acc-002"}},
-    # Outside an accounts reader's envelope: the agent refuses it before building a request.
     "pay-supplier": {"label": "Supplier payment", "capability": "payment_initiation", "tool": "pay_supplier",
                      "args": {"invoice_id": "inv-001"}},
+    # Outside the Principal's envelope (Raidiam grants it no lending capability): refused before a request is built.
+    "loan-balance": {"label": "Business loan balance", "capability": "lending_read", "tool": "get_loan_balance",
+                     "args": {"loan_id": "loan-001"}},
 }
 
 

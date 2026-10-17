@@ -330,6 +330,21 @@ services:
       - ../keys/gateway/pep-ssf.private.jwk.json:/keys/pep-ssf.private.jwk.json:ro
     depends_on: [pingauthorize]
 
+  # The policy administration point: PingAuthorize Policy Editor 11.1 (the PDP's version). The rig's policy is authored
+  # here through its API (../gateway/pingauthorize/author-policy.py) and the PDP reads the committed branch live
+  # (external mode). The UI, for looking: https://localhost:8448 (demo-mode sign-in).
+  pingauthorize-pap:
+    image: pingidentity/pingauthorizepap:11.1.0.0-latest
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:8448:1443"
+    environment:
+      PING_IDENTITY_ACCEPT_EULA: "YES"
+      PING_EXTERNAL_BASE_URL: localhost:8448
+      DECISION_POINT_SHARED_SECRET: rig-pap-dev-secret
+    env_file:
+      - path: ${PING_DEVOPS_CONFIG:-${HOME}/.pingidentity/config}
+
   # The policy decision point: PingAuthorize 11.1, its embedded PDP behind the AuthZEN servlet. Not published on the
   # host. Takes a few minutes to set up on first start (licence fetch, server profile).
   pingauthorize:
