@@ -96,7 +96,7 @@ services:
       ENTITY_TLS_CERT: /keys/entity-host-tls.crt
       ENTITY_TLS_KEY: /keys/entity-host-tls.key
       AUTHORITY_HINT: ${AUTHORITY_HINT:-https://authority.directory.cba.raidiam.io/authority/5a27c88b-97ed-4d37-a3c8-59c66b19aa25}
-      CLIENT_NAME: SPIRE attested client (federation-sourced bindings)
+      CLIENT_NAME: Principal Agent (POC)
       # Its own SPIFFE identity: one bound to two clients is refused at issuance (instance identity is bound to more
       # than one client). SPIRE needs an entry: spiffe://example.org/spire-client <- docker:label:app:spire-client.
       SPIFFE_IDS: ${SPIFFE_IDS:-spiffe://example.org/spire-client}
