@@ -1,8 +1,12 @@
-"""Calls the resource directly with the agent's own token, for harness.py's gateway and PDP checks - things the agent
-itself would refuse to try. Prints one JSON line per probe: PROBE {"name", "http", "jsonrpc_error", "result"}.
+"""Calls the resource through the gateway with the agent's own tokens, for harness.py's gateway, DPoP and Shared Signals
+checks - things the agent itself would refuse to try. Prints one JSON line per probe: PROBE {...}.
 
-    python probe.py                      # the gateway and PDP probes
-    PROBE=ssf EMIT_SECRET=... python probe.py   # Shared Signals: revoke, disable and re-enable the agent
+    python probe.py                              # gateway, PDP and DPoP probes
+    PROBE=ssf EMIT_SECRET=... python probe.py    # Shared Signals: revoke, disable and re-enable the agent, then one
+                                                 # instance of it while another carries on
+
+Each "instance" is a key of its own, attested by the provider on this container's SVID - two copies of the agent - and
+each token is DPoP-bound to its instance's key.
 """
 import json
 import os
@@ -11,6 +15,7 @@ import time
 import jwt
 import requests
 from client_attestation_sdk.svid_source import SpireWorkloadApiSvidSource
+from cryptography.hazmat.primitives.asymmetric import ec
 
 import agent as a
 import federation
@@ -20,82 +25,100 @@ ca = fedresolve.ca_bundle(os.environ["PF_CA_FILE"])
 os.environ["SSL_CERT_FILE"] = os.environ["PF_CA_FILE"] = ca
 resource = os.environ.get("RESOURCE_IDS", "https://host.docker.internal:8446").split(",")[0].strip()
 endpoint = resource + "/mcp/v1"
+issuer = os.environ.get("AUTHORISATION_SERVER") or "https://bottle-platonic-parted.ngrok-free.dev"
+agent_id = os.environ["AGENT_ID"]
 headers = {"Accept": "application/json, text/event-stream", "Content-Type": "application/json"}
+GET_BALANCE = {"name": "get_balance", "arguments": {"account_id": "acc-002"}}
 
 
-def token() -> str:
-    key, public = a.instance_key(os.environ.get("INSTANCE_KEY_FILE", "/state/instance.jwk"))
-    provider, agent_id = os.environ["AGENT_PROVIDER"].rstrip("/"), os.environ["AGENT_ID"]
-    svid = SpireWorkloadApiSvidSource(socket_path=os.environ.get("SPIRE_SOCKET", "/run/spire/sockets/agent.sock"),
-                                      spire_agent="spire-agent").fetch(provider)
-    att = requests.post(provider + "/attest", json={"client_id": agent_id, "instance_jwk": public, "svid": svid},
-                        verify=ca, timeout=20).json()["wallet_attestation"]
-    issuer = os.environ.get("AUTHORISATION_SERVER") or "https://bottle-platonic-parted.ngrok-free.dev"
-    return a.token(issuer, resource, agent_id, att, key)
+class Instance:
+    """One copy of the agent: its key, attested by the provider, and a DPoP-bound token for the resource."""
+
+    def __init__(self, key_file: str):
+        self.key, public = a.instance_key(key_file)
+        self.jkt = a.jwk_thumbprint(a.public_jwk(self.key))
+        provider = os.environ["AGENT_PROVIDER"].rstrip("/")
+        svid = SpireWorkloadApiSvidSource(socket_path=os.environ.get("SPIRE_SOCKET", "/run/spire/sockets/agent.sock"),
+                                          spire_agent="spire-agent").fetch(provider)
+        self.attestation = requests.post(provider + "/attest", verify=ca, timeout=20, json={
+            "client_id": agent_id, "instance_jwk": public, "svid": svid}).json()["wallet_attestation"]
+
+    def token(self) -> str:
+        return a.token(issuer, resource, agent_id, self.attestation, self.key)
 
 
-def call(name: str, bearer: str, tool: str, args: dict):
-    r = requests.post(endpoint, headers={**headers, "Authorization": "Bearer " + bearer}, verify=ca, timeout=30,
-                      json={"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {"name": tool, "arguments": args}})
-    body = {}
+def send(token: str, params: dict, scheme: str = "DPoP", proof_key=None, proof: str = None):
+    """A tools/call through the gateway: (HTTP status, JSON-RPC error, result)."""
+    h = {**headers, "Authorization": f"{scheme} {token}"}
+    if scheme == "DPoP":
+        h["DPoP"] = proof or a.dpop_proof(proof_key, "POST", endpoint, token)
+    r = requests.post(endpoint, headers=h, verify=ca, timeout=30,
+                      json={"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": params})
     try:
         body = r.json()
     except ValueError:
-        pass
-    print("PROBE " + json.dumps({"name": name, "http": r.status_code, "jsonrpc_error": body.get("error"),
-                                 "result": (body.get("result") or {}).get("structuredContent")
-                                 or (body.get("result") or {}).get("content")}), flush=True)
+        body = {}
+    result = (body.get("result") or {}).get("structuredContent") or (body.get("result") or {}).get("content")
+    return r.status_code, body.get("error"), result
 
 
-def emit(event_type: str, subject_sub: str) -> int:
+def report(name: str, outcome):
+    status, error, result = outcome
+    print("PROBE " + json.dumps({"name": name, "http": status, "jsonrpc_error": error, "result": result}), flush=True)
+
+
+def emit(event_type: str, subject: dict) -> int:
     """Raise an event at PingFederate's SSF transmitter, as its operator (conformance-ssf-emitter, EMIT_SECRET)."""
-    issuer = os.environ.get("AUTHORISATION_SERVER") or "https://bottle-platonic-parted.ngrok-free.dev"
     base = federation.reachable(issuer)
     tok = requests.post(base + "/as/token.oauth2", verify=ca, timeout=20, data={
         "grant_type": "client_credentials", "client_id": "conformance-ssf-emitter",
         "client_secret": os.environ["EMIT_SECRET"], "scope": "ssf.provision"}).json()["access_token"]
     r = requests.post(base + "/ssf/events:emit", verify=ca, timeout=20, headers={"Authorization": "Bearer " + tok},
-                      json={"event_type": event_type, "event": {},
-                            "subject": {"format": "iss_sub", "iss": issuer, "sub": subject_sub}})
+                      json={"event_type": event_type, "event": {}, "subject": subject})
     r.raise_for_status()
     return r.json().get("count", 0)
 
 
-def status(bearer: str) -> int:
-    """The HTTP status of a get_balance through the gateway: 200, or 401 when the PEP refuses the token."""
-    r = requests.post(endpoint, headers={**headers, "Authorization": "Bearer " + bearer}, verify=ca, timeout=30,
-                      json={"jsonrpc": "2.0", "id": 1, "method": "tools/call",
-                            "params": {"name": "get_balance", "arguments": {"account_id": "acc-002"}}})
-    return r.status_code
+def status(instance: Instance, token: str) -> int:
+    return send(token, GET_BALANCE, proof_key=instance.key)[0]
 
 
-def until(bearer: str, want: int, limit: float = 20.0):
-    """Seconds until a call with bearer answers want, or None."""
+def until(instance: Instance, token: str, want: int, limit: float = 20.0):
+    """Seconds until a call answers want, or None."""
     start = time.time()
     while time.time() - start < limit:
-        if status(bearer) == want:
+        if status(instance, token) == want:
             return round(time.time() - start, 1)
         time.sleep(0.5)
     return None
 
 
 def signals():
-    """Shared Signals through the gateway: the PEP's stream from PingFederate's transmitter."""
-    agent_id = os.environ["AGENT_ID"]
     caep, risc = "https://schemas.openid.net/secevent/caep/event-type/", "https://schemas.openid.net/secevent/risc/event-type/"
-    first = token()
-    out = {"name": "ssf", "before": status(first)}
-    out["session_revoked_streams"] = emit(caep + "session-revoked", agent_id)
-    out["old_token_refused_after_s"] = until(first, 401)
+    agent_subject = {"format": "iss_sub", "iss": issuer, "sub": agent_id}
+    one, two = Instance("/state/instance.jwk"), Instance("/state/instance-2.jwk")
+    first = one.token()
+    out = {"name": "ssf", "before": status(one, first)}
+    out["session_revoked_streams"] = emit(caep + "session-revoked", agent_subject)
+    out["old_token_refused_after_s"] = until(one, first, 401)
     time.sleep(1.2)  # a token issued in the same second as the event counts as before it
-    second = token()
-    out["new_token_after_session_revoked"] = status(second)
-    out["account_disabled_streams"] = emit(risc + "account-disabled", agent_id)
-    out["disabled_refused_after_s"] = until(second, 401)
-    third = token()
-    out["fresh_token_while_disabled"] = status(third)
-    emit(risc + "account-enabled", agent_id)
-    out["enabled_ok_after_s"] = until(third, 200)
+    second = one.token()
+    out["new_token_after_session_revoked"] = status(one, second)
+    out["account_disabled_streams"] = emit(risc + "account-disabled", agent_subject)
+    out["disabled_refused_after_s"] = until(one, second, 401)
+    third = one.token()
+    out["fresh_token_while_disabled"] = status(one, third)
+    emit(risc + "account-enabled", agent_subject)
+    out["enabled_ok_after_s"] = until(one, third, 200)
+
+    # One instance, not the agent: the subject is that instance's key thumbprint, its tokens' cnf.jkt.
+    token_one, token_two = one.token(), two.token()
+    out["instances_differ"] = one.jkt != two.jkt
+    emit(risc + "account-disabled", {"format": "opaque", "id": one.jkt})
+    out["instance_refused_after_s"] = until(one, token_one, 401)
+    out["other_instance_while_one_disabled"] = status(two, token_two)
+    emit(risc + "account-enabled", {"format": "opaque", "id": one.jkt})
+    out["instance_ok_after_s"] = until(one, token_one, 200)
     print("PROBE " + json.dumps(out), flush=True)
 
 
@@ -103,9 +126,20 @@ if os.environ.get("PROBE") == "ssf":
     signals()
     raise SystemExit(0)
 
-good = token()
+me = Instance("/state/instance.jwk")
+good = me.token()
+
 claims = jwt.decode(good, options={"verify_signature": False})
-forged = jwt.encode(claims, "not-pingfederates-key", algorithm="HS256")
-call("forged_token", forged, "get_balance", {"account_id": "acc-002"})
-call("pdp_permit", good, "get_balance", {"account_id": "acc-002"})
-call("pdp_deny_large_payment", good, "pay_supplier", {"from_account": "acc-002", "to_account": "supplier-77", "amount": 5000})
+report("forged_token", send(jwt.encode(claims, "not-pingfederates-key", algorithm="HS256"), GET_BALANCE, proof_key=me.key))
+report("pdp_permit", send(good, GET_BALANCE, proof_key=me.key))
+report("pdp_deny_large_payment", send(good, {"name": "pay_supplier", "arguments": {
+    "from_account": "acc-002", "to_account": "supplier-77", "amount": 5000}}, proof_key=me.key))
+
+# DPoP: the token is bound to this instance's key.
+report("dpop_bound_token_as_bearer", send(good, GET_BALANCE, scheme="Bearer"))
+report("dpop_proof_from_another_key", send(good, GET_BALANCE, proof_key=ec.generate_private_key(ec.SECP256R1())))
+once = a.dpop_proof(me.key, "POST", endpoint, good)
+report("dpop_proof_first_use", send(good, GET_BALANCE, proof=once))
+report("dpop_proof_replayed", send(good, GET_BALANCE, proof=once))
+print("PROBE " + json.dumps({"name": "dpop_binding", "cnf_jkt": (claims.get("cnf") or {}).get("jkt"),
+                             "instance_jkt": me.jkt}), flush=True)

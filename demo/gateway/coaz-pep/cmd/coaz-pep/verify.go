@@ -159,6 +159,18 @@ func (v *tokenVerifier) verifySignature(token, typ string) error {
 	if err != nil {
 		return err
 	}
+	if err := verifyJWS(token, alg, key); err != nil {
+		return fmt.Errorf("signature does not verify with key %q", kid)
+	}
+	return nil
+}
+
+// verifyJWS checks a compact JWS's signature under key with alg (RS256, PS256 or ES256, matched to the key's type).
+func verifyJWS(token, alg string, key any) error {
+	parts := strings.Split(token, ".")
+	if len(parts) != 3 {
+		return errors.New("not a compact JWS")
+	}
 	sig, err := b64urlDecode(parts[2])
 	if err != nil {
 		return errors.New("unreadable signature")
@@ -168,24 +180,21 @@ func (v *tokenVerifier) verifySignature(token, typ string) error {
 	case *rsa.PublicKey:
 		switch alg {
 		case "RS256":
-			err = rsa.VerifyPKCS1v15(k, crypto.SHA256, digest[:], sig)
+			return rsa.VerifyPKCS1v15(k, crypto.SHA256, digest[:], sig)
 		case "PS256":
-			err = rsa.VerifyPSS(k, crypto.SHA256, digest[:], sig, &rsa.PSSOptions{SaltLength: rsa.PSSSaltLengthEqualsHash})
-		default:
-			return fmt.Errorf("alg %q not accepted for an RSA key", alg)
+			return rsa.VerifyPSS(k, crypto.SHA256, digest[:], sig, &rsa.PSSOptions{SaltLength: rsa.PSSSaltLengthEqualsHash})
 		}
+		return fmt.Errorf("alg %q not accepted for an RSA key", alg)
 	case *ecdsa.PublicKey:
 		if alg != "ES256" || len(sig) != 64 {
 			return fmt.Errorf("alg %q not accepted for an EC key", alg)
 		}
 		if !ecdsa.Verify(k, digest[:], new(big.Int).SetBytes(sig[:32]), new(big.Int).SetBytes(sig[32:])) {
-			err = errors.New("bad signature")
+			return errors.New("bad signature")
 		}
+		return nil
 	}
-	if err != nil {
-		return fmt.Errorf("signature does not verify with key %q", kid)
-	}
-	return nil
+	return errors.New("unsupported key")
 }
 
 func (v *tokenVerifier) verifyClaims(claims map[string]any) error {

@@ -49,7 +49,10 @@ binds:
                 pep_label: "PEP (rs-accounts MCP)"
                 style: "mcp"
                 require_token: "true"
-                require_dpop: "false"
+                # Tokens are bound to the agent instance's key (cnf.jkt, from the attestation): every call carries
+                # a DPoP proof from that key, checked here (coaz-pep dpop.go) - never at the resource.
+                require_dpop: "true"
+                dpop_htu_base: "__RESOURCE_ID__"
                 # The agent acts as itself (client_credentials): there is no end user behind it.
                 require_user_login: "false"
                 # The PEP has verified the audience (TOKEN_AUDIENCE). Until the rig has its own policy, the PDP runs

@@ -21,6 +21,8 @@ JOB picks the job (list-accounts, get-balance); the capability it needs must be 
 before a request is built - agent-r's rule.
 """
 import asyncio
+import hashlib
+import base64
 import concurrent.futures
 import json
 import os
@@ -51,6 +53,12 @@ JOBS = {
 # What the run did, step by step, printed as one line at the end - "AGENT_RESULT {json}" - whatever the outcome, for
 # a harness to check (harness.py). outcome: "ok", "refused" (the agent or a party refused, by design) or "error".
 RESULT = {"outcome": None, "reason": None, "steps": {}}
+
+
+def jwk_thumbprint(jwk: dict) -> str:
+    """RFC 7638: what a token's cnf.jkt is, for an EC key."""
+    canon = json.dumps({k: jwk[k] for k in ("crv", "kty", "x", "y")}, separators=(",", ":"), sort_keys=True)
+    return base64.urlsafe_b64encode(hashlib.sha256(canon.encode()).digest()).rstrip(b"=").decode()
 
 
 def say(step: str, text: str) -> None:
@@ -116,35 +124,72 @@ def discover_resources(resolver, authority: str, anchor: str, local: list, ca) -
     return [{"entity_id": sub, **meta} for sub, meta in sorted(found.items())]
 
 
+def public_jwk(key) -> dict:
+    """The instance key's public half, as a DPoP proof names it."""
+    jwk = json.loads(ECAlgorithm.to_jwk(key.public_key()))
+    return {k: jwk[k] for k in ("kty", "crv", "x", "y")}
+
+
+def dpop_proof(key, htm: str, htu: str, access_token: str = None, nonce: str = None) -> str:
+    """An RFC 9449 proof signed by the instance key: the key the provider attested (the attestation's cnf), so the
+    token PingFederate issues is bound to this instance (cnf.jkt), and every call proves possession of it."""
+    claims = {"htm": htm, "htu": htu.split("?")[0].split("#")[0], "iat": int(time.time()), "jti": str(uuid.uuid4())}
+    if access_token:
+        claims["ath"] = base64.urlsafe_b64encode(hashlib.sha256(access_token.encode()).digest()).rstrip(b"=").decode()
+    if nonce:
+        claims["nonce"] = nonce
+    return jwt.encode(claims, key, "ES256", headers={"typ": "dpop+jwt", "jwk": public_jwk(key)})
+
+
 def token(issuer: str, resource: str, client_id: str, attestation: str, key) -> str:
+    """attest_jwt_client_auth in DPoP combined mode: the attestation, and a DPoP proof from the instance key in place
+    of the attestation PoP. The token comes back DPoP-bound to the instance (token_type DPoP, cnf.jkt)."""
     discovery = requests.get(federation.reachable(issuer.rstrip("/") + "/.well-known/openid-configuration"),
                              timeout=15, verify=federation.pf_verify()).json()
-    if "attest_jwt_client_auth" not in discovery.get("token_endpoint_auth_methods_supported", []):
-        raise RuntimeError(f"{issuer} does not accept attest_jwt_client_auth")
+    if "attest_jwt_client_auth_dpop" not in discovery.get("token_endpoint_auth_methods_supported", []):
+        raise RuntimeError(f"{issuer} does not accept attest_jwt_client_auth_dpop")
     endpoint = federation.reachable(discovery["token_endpoint"])
-    challenge = None
-    for _ in range(2):
-        now = int(time.time())
-        pop = {"iss": client_id, "aud": discovery["issuer"], "jti": str(uuid.uuid4()), "iat": now, "exp": now + 60}
-        if challenge:
-            pop["challenge"] = challenge
+    nonce = challenge = None
+    for _ in range(3):
+        proof = dpop_proof(key, "POST", discovery["token_endpoint"], nonce=nonce)
+        if challenge:  # an attestation challenge rides in the proof in combined mode
+            claims = jwt.decode(proof, options={"verify_signature": False})
+            proof = jwt.encode({**claims, "challenge": challenge}, key, "ES256",
+                               headers={"typ": "dpop+jwt", "jwk": public_jwk(key)})
         r = requests.post(endpoint, timeout=20, verify=federation.pf_verify(),
                           data={"grant_type": "client_credentials", "resource": resource},
-                          headers={"OAuth-Client-Attestation": attestation,
-                                   "OAuth-Client-Attestation-PoP": jwt.encode(
-                                       pop, key, "ES256", headers={"typ": "oauth-client-attestation-pop+jwt"})})
-        challenge = r.headers.get("OAuth-Client-Attestation-Challenge")
+                          headers={"OAuth-Client-Attestation": attestation, "DPoP": proof})
         if r.ok:
-            return r.json()["access_token"]
-        if not challenge:
+            body = r.json()
+            if body.get("token_type", "").lower() != "dpop":
+                raise RuntimeError(f"the token came back {body.get('token_type')}, not DPoP-bound")
+            return body["access_token"]
+        nonce = r.headers.get("DPoP-Nonce") or nonce
+        challenge = r.headers.get("OAuth-Client-Attestation-Challenge") or challenge
+        if not (r.headers.get("DPoP-Nonce") or r.headers.get("OAuth-Client-Attestation-Challenge")):
             raise RuntimeError(f"the authorisation server refused this agent: {r.status_code} {r.text[:300]}")
-    raise RuntimeError("the attestation challenge handshake did not complete")
+    raise RuntimeError("the DPoP nonce / attestation challenge handshake did not complete")
 
 
-async def call_mcp(endpoint: str, access_token: str, tool: str, args: dict):
+class DPoPAuth:
+    """httpx auth for the MCP client: every request carries the bound token and a fresh proof from the instance key."""
+
+    def __new__(cls, key, access_token: str):
+        import httpx
+
+        class _Auth(httpx.Auth):
+            def auth_flow(self, request):
+                request.headers["Authorization"] = f"DPoP {access_token}"
+                request.headers["DPoP"] = dpop_proof(key, request.method, str(request.url), access_token)
+                yield request
+
+        return _Auth()
+
+
+async def call_mcp(endpoint: str, access_token: str, tool: str, args: dict, key=None):
     from mcp import ClientSession
     from mcp.client.streamable_http import streamablehttp_client
-    async with streamablehttp_client(endpoint, headers={"Authorization": f"Bearer {access_token}"}) as (r, w, _):
+    async with streamablehttp_client(endpoint, auth=DPoPAuth(key, access_token)) as (r, w, _):
         async with ClientSession(r, w) as session:
             await session.initialize()
             tools = await session.list_tools()
@@ -229,13 +274,15 @@ def main() -> None:
     except RuntimeError as e:
         raise Refused("token", str(e))
     at = jwt.decode(access_token, options={"verify_signature": False})
-    say("token", f"client_id {at.get('client_id')}, aud {at.get('aud')}, expires {time.ctime(at['exp'])}")
-    record("token", client_id=at.get("client_id"), aud=at.get("aud"), iss=at.get("iss"))
+    say("token", f"client_id {at.get('client_id')}, aud {at.get('aud')}, bound to this instance's key "
+                 f"(cnf.jkt {(at.get('cnf') or {}).get('jkt')}), expires {time.ctime(at['exp'])}")
+    record("token", client_id=at.get("client_id"), aud=at.get("aud"), iss=at.get("iss"),
+           cnf_jkt=(at.get("cnf") or {}).get("jkt"), instance_jkt=jwk_thumbprint(public_jwk(key)))
 
     # 6. The call.
     endpoint = (chosen.get("endpoints") or [chosen["resource"].rstrip("/") + "/mcp"])[0]
     try:
-        result = asyncio.run(call_mcp(endpoint, access_token, job["tool"], job["args"]))
+        result = asyncio.run(call_mcp(endpoint, access_token, job["tool"], job["args"], key))
     except Exception as e:
         status = next((getattr(x, "response", None).status_code for x in getattr(e, "exceptions", [e])
                        if getattr(x, "response", None) is not None), None)

@@ -71,7 +71,8 @@ def resource_metadata() -> dict:
         "scopes_supported": ["accounts.read"],
         "authorization_details_types_supported": ["accounts_read"],
         "bearer_methods_supported": ["header"],
-        "dpop_bound_access_tokens_required": False,
+        # Enforced by the gateway in front (coaz-pep), not by this server.
+        "dpop_bound_access_tokens_required": True,
         "https://cba.com.au/federation/interface": "mcp",
         "https://cba.com.au/federation/division": "Rig",
         "endpoints": [RESOURCE_ID + MCP_PATH],
@@ -115,9 +116,12 @@ def as_keys() -> jwt.PyJWKSet:
 
 
 def check_token(authorization: str) -> dict:
-    if not authorization.lower().startswith("bearer "):
-        raise Refused(401, "invalid_token", "a bearer token is required")
-    token = authorization[7:].strip()
+    # DPoP (the token bound to the agent instance's key) is enforced at the gateway, which verifies every proof
+    # before a call gets here; this takes the token from either scheme and makes its own checks of it.
+    scheme, _, token = authorization.partition(" ")
+    if scheme.lower() not in ("bearer", "dpop") or not token.strip():
+        raise Refused(401, "invalid_token", "an access token is required")
+    token = token.strip()
     try:
         header = jwt.get_unverified_header(token)
         if header.get("typ", "").lower() not in ("at+jwt", "application/at+jwt"):

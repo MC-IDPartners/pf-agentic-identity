@@ -214,6 +214,9 @@ def run(rep: Report, a) -> dict:
     rep.expect("run", "token for this agent, for the resource",
                tok.get("client_id") == a.agent and tok.get("aud") == a.resource,
                f"client_id {tok.get('client_id')}, aud {tok.get('aud')}" if tok else "not reached")
+    rep.expect("run", "the token is bound to this instance's key (cnf.jkt)",
+               bool(tok.get("cnf_jkt")) and tok.get("cnf_jkt") == tok.get("instance_jkt"),
+               f"cnf.jkt {tok.get('cnf_jkt')}, instance key {tok.get('instance_jkt')}" if tok else "not reached")
     call = s.get("call", {})
     rep.expect("run", "the resource allowed the call", call.get("status") == 200,
                f"{call.get('tool')}: {call.get('status')}" if call else "not reached")
@@ -262,6 +265,17 @@ def gateway(rep: Report, a):
     rep.expect("gateway", "the PDP permits get_balance and the call reaches the resource",
                ok.get("http") == 200 and not ok.get("jsonrpc_error") and bool(ok.get("result")),
                f"HTTP {ok.get('http')}, error {ok.get('jsonrpc_error')}")
+    b = probes.get("dpop_binding", {})
+    rep.expect("gateway", "DPoP: the token is bound to the instance's key", bool(b.get("cnf_jkt")) and
+               b.get("cnf_jkt") == b.get("instance_jkt"), f"cnf.jkt {b.get('cnf_jkt')}")
+    for name, check in [("dpop_bound_token_as_bearer", "DPoP: the bound token presented as Bearer is refused"),
+                        ("dpop_proof_from_another_key", "DPoP: a proof from another key (a stolen token) is refused"),
+                        ("dpop_proof_replayed", "DPoP: a replayed proof is refused")]:
+        p = probes.get(name, {})
+        rep.expect("gateway", check, p.get("http") == 401, f"HTTP {p.get('http')}")
+    first = probes.get("dpop_proof_first_use", {})
+    rep.expect("gateway", "DPoP: the same proof's first use is accepted", first.get("http") == 200,
+               f"HTTP {first.get('http')}")
     deny = probes.get("pdp_deny_large_payment", {})
     err = deny.get("jsonrpc_error") if isinstance(deny.get("jsonrpc_error"), dict) else {"message": str(deny.get("jsonrpc_error"))}
     rep.expect("gateway", "the PDP denies a 5000 payment (COAZ -32401) before it reaches the resource",
@@ -299,6 +313,13 @@ def signals(rep: Report, a):
                f"refused after {p.get('disabled_refused_after_s')} s, fresh token HTTP {p.get('fresh_token_while_disabled')}")
     rep.expect("signals", "account-enabled: the agent works again", fast(p.get("enabled_ok_after_s")),
                f"after {p.get('enabled_ok_after_s')} s")
+    rep.expect("signals", "one instance disabled (opaque subject = its cnf.jkt) is refused",
+               p.get("instances_differ") and fast(p.get("instance_refused_after_s")),
+               f"after {p.get('instance_refused_after_s')} s")
+    rep.expect("signals", "... while another instance of the same agent carries on",
+               p.get("other_instance_while_one_disabled") == 200, f"HTTP {p.get('other_instance_while_one_disabled')}")
+    rep.expect("signals", "... and the instance works again once re-enabled", fast(p.get("instance_ok_after_s")),
+               f"after {p.get('instance_ok_after_s')} s")
 
 
 def cleanup(a):

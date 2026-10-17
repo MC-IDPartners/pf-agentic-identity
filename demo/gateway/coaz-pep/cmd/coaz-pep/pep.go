@@ -46,16 +46,18 @@ import (
 // pepConfig mirrors a gateway route's PEP knobs, populated from the extAuthz
 // `context` map (Envoy context_extensions) or the Kong plugin config.
 type pepConfig struct {
-	pepLabel         string
-	style            string // "mcp" | "rest"
-	requireToken     bool
-	requireDpop      bool
+	pepLabel     string
+	style        string // "mcp" | "rest"
+	requireToken bool
+	requireDpop  bool
+	// dpopHTUBase: the origin clients address, for the DPoP proof's htu (route context dpop_htu_base).
+	dpopHTUBase      string
 	requireUserLogin bool
 	// omitTokenAud: don't send the agent token's audience to the PDP (route context omit_token_aud). For a PEP that
 	// has verified the audience itself (TOKEN_AUDIENCE) in front of a policy that pins a different one.
 	omitTokenAud bool
-	stepupScope      string
-	stepupAction     string
+	stepupScope  string
+	stepupAction string
 	// mcpUpstreamURL enables COAZ on an MCP route: the MCP server whose
 	// tools/list declares the x-coaz-mapping objects.
 	mcpUpstreamURL string
@@ -74,6 +76,7 @@ func configFrom(ext map[string]string) pepConfig {
 		style:            get("style", "rest"),
 		requireToken:     isTrue("require_token"),
 		requireDpop:      isTrue("require_dpop"),
+		dpopHTUBase:      ext["dpop_htu_base"],
 		requireUserLogin: isTrue("require_user_login"),
 		omitTokenAud:     isTrue("omit_token_aud"),
 		stepupScope:      ext["stepup_scope"],
@@ -240,11 +243,10 @@ func (s *server) check(ctx context.Context, conf pepConfig, method, path string,
 			"Access token missing or unreadable (no subject claim).", nil)
 	}
 
-	// 2) DPoP sender-constraint binding (RFC 9449)
-	if conf.requireDpop {
-		if resp := checkDpop(pep, scheme, method, path, headers, claims); resp != nil {
-			return resp
-		}
+	// 2) DPoP sender-constraint binding (RFC 9449, dpop.go): always for a bound token, and for every token on a
+	//    require_dpop route.
+	if resp := checkDpop(pep, conf, scheme, method, path, token, headers, claims); resp != nil {
+		return resp
 	}
 
 	// 2b) COAZ (AuthZEN MCP profile): tools/call on an MCP route with a
@@ -456,43 +458,6 @@ func extractToken(auth string) (token, scheme string) {
 }
 
 // checkDpop enforces the DPoP proof / cnf.jkt binding; nil means pass.
-func checkDpop(pep, scheme, method, path string, headers map[string]string, claims map[string]any) *authv3.CheckResponse {
-	fail := func(reason string) *authv3.CheckResponse {
-		return denySimple(pep, typev3.StatusCode_Unauthorized, codes.Unauthenticated, reason, nil)
-	}
-	if scheme != "dpop" {
-		return fail("DPoP-bound token required but Authorization scheme was not DPoP.")
-	}
-	proof := headers["dpop"]
-	if proof == "" {
-		return fail("Missing DPoP proof header.")
-	}
-	phdr := jwtHeader(proof)
-	pclaims := jwtClaims(proof)
-	var jkt string
-	if jwk, ok := phdr["jwk"].(map[string]any); ok {
-		jkt = jwkThumbprint(jwk)
-	}
-	var cnfJkt string
-	if cnf, ok := claims["cnf"].(map[string]any); ok {
-		cnfJkt, _ = cnf["jkt"].(string)
-	}
-	if jkt == "" || cnfJkt == "" || jkt != cnfJkt {
-		return fail("DPoP proof key does not match the token's cnf.jkt binding.")
-	}
-	if claimString(pclaims, "htm") != method {
-		return fail("DPoP proof htm does not match the request method.")
-	}
-	if pclaims["ath"] == nil {
-		return fail("DPoP proof missing ath (access-token hash).")
-	}
-	// htu is validated best-effort: hosts get rewritten behind platform
-	// proxies, so a mismatch is logged rather than fatal.
-	if htu := claimString(pclaims, "htu"); htu != "" && !strings.Contains(htu, path) {
-		log.Printf("[%s] DPoP htu path mismatch: %s", pep, htu)
-	}
-	return nil
-}
 
 // consentedPayment pulls the amount cap + destination account from the first
 // payment_initiation entry of an RFC 9396 authorization_details value (as decoded

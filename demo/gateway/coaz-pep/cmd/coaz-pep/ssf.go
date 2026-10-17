@@ -8,7 +8,8 @@ package main
 //   caep session-revoked   tokens issued at or before the event are refused; a token issued after it is not
 //   risc account-disabled  every token is refused, until
 //   risc account-enabled   which lifts it
-// Subjects: iss_sub (iss must be the tokens' issuer, TOKEN_ISSUER) or opaque (the id is the client_id).
+// Subjects: iss_sub (iss must be the tokens' issuer, TOKEN_ISSUER; sub the agent's client_id) or opaque - the id is
+// an agent's client_id, or an instance's key thumbprint (a token's cnf.jkt), which revokes that instance alone.
 // Every SET is verified against the token JWKS (TOKEN_JWKS_URL) and its iss must be the transmitter's.
 //
 // Environment (the receiver is on when SSF_CONFIGURATION_URL is set; it needs TOKEN_JWKS_URL):
@@ -106,7 +107,11 @@ func newSSFReceiver(tokens *tokenVerifier) (*ssfReceiver, error) {
 }
 
 func rsaPrivateKey(j map[string]any) (*rsa.PrivateKey, error) {
-	num := func(k string) *big.Int { s, _ := j[k].(string); b, _ := b64urlDecode(s); return new(big.Int).SetBytes(b) }
+	num := func(k string) *big.Int {
+		s, _ := j[k].(string)
+		b, _ := b64urlDecode(s)
+		return new(big.Int).SetBytes(b)
+	}
 	if j["kty"] != "RSA" || num("d").Sign() == 0 {
 		return nil, errors.New("not an RSA private JWK")
 	}
@@ -116,28 +121,34 @@ func rsaPrivateKey(j map[string]any) (*rsa.PrivateKey, error) {
 	return k, k.Validate()
 }
 
-// refused says whether a token is refused by a signal, and why.
+// refused says whether a token is refused by a signal, and why: one about its agent (client_id, else sub) or about
+// the instance it is bound to (its cnf.jkt, an opaque subject).
 func (r *ssfReceiver) refused(claims map[string]any) (string, bool) {
 	if r == nil {
 		return "", false
 	}
-	subject := claimString(claims, "client_id")
-	if subject == "" {
-		subject = claimString(claims, "sub")
-	}
-	r.mu.Lock()
-	rev, ok := r.revoked[subject]
-	r.mu.Unlock()
-	if !ok {
-		return "", false
-	}
-	if rev.disabled {
-		return fmt.Sprintf("%s is disabled (%s at %s)", subject, shortEvent(rev.eventType), rev.at.UTC().Format(time.RFC3339)), true
+	agent := claimString(claims, "client_id")
+	if agent == "" {
+		agent = claimString(claims, "sub")
 	}
 	iat, _ := claims["iat"].(float64)
-	if !rev.cutoff.IsZero() && int64(iat) <= rev.cutoff.Unix() {
-		return fmt.Sprintf("%s's tokens issued up to %s are revoked (%s)", subject, rev.cutoff.UTC().Format(time.RFC3339),
-			shortEvent(rev.eventType)), true
+	for _, subject := range []string{agent, cnfJkt(claims)} {
+		if subject == "" {
+			continue
+		}
+		r.mu.Lock()
+		rev, ok := r.revoked[subject]
+		r.mu.Unlock()
+		if !ok {
+			continue
+		}
+		if rev.disabled {
+			return fmt.Sprintf("%s is disabled (%s at %s)", subject, shortEvent(rev.eventType), rev.at.UTC().Format(time.RFC3339)), true
+		}
+		if !rev.cutoff.IsZero() && int64(iat) <= rev.cutoff.Unix() {
+			return fmt.Sprintf("%s's tokens issued up to %s are revoked (%s)", subject, rev.cutoff.UTC().Format(time.RFC3339),
+				shortEvent(rev.eventType)), true
+		}
 	}
 	return "", false
 }

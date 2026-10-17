@@ -32,7 +32,7 @@ From `spire-workload/`, with the rest of the rig up (`../raidiam/README.md`, "Th
 
 ```bash
 docker compose up -d rs-accounts pingauthorize coaz-pep gateway   # PingAuthorize takes a minute on first start
-python harness.py                                                  # 31 checks: the gateway's and the signals' among them
+python harness.py                                                  # 40 checks: the gateway's, DPoP's and the signals' among them
 ```
 
 PingAuthorize fetches a DevOps evaluation licence on start from `~/.pingidentity/config`
@@ -40,6 +40,26 @@ PingAuthorize fetches a DevOps evaluation licence on start from `~/.pingidentity
 
 Decisions are in coaz-pep's log (`docker compose logs -f coaz-pep`): `COAZ PERMIT tools/call get_balance ...`,
 `COAZ DENY tools/call pay_supplier: Access denied`, `token refused: ...`.
+
+## Tokens bound to the agent instance (DPoP)
+
+The token is bound to the key the provider attested - the agent instance's own, proven by its SPIRE SVID:
+
+1. The agent asks for a token with `attest_jwt_client_auth` in **DPoP combined mode**: the provider's attestation
+   (`cnf.jwk` = the instance key) and a DPoP proof signed by that key, instead of the attestation PoP. The module
+   checks the proof's key is the attestation's `cnf` key; PingFederate issues `token_type: DPoP` with
+   `cnf.jkt` = the instance key's thumbprint. No PingFederate setting is needed.
+2. Every call carries `Authorization: DPoP <token>` and a fresh proof from the instance key (the agent's MCP client
+   signs one per request).
+3. The **gateway** enforces it - not the resource (`coaz-pep/cmd/coaz-pep/dpop.go`, route `require_dpop`,
+   `dpop_htu_base`): the proof's signature under its own `jwk` (public only), that key's thumbprint = `cnf.jkt`,
+   `typ`, `alg`, `htm`, `htu` (the resource's URL as the client addressed it), `ath` = the token's hash, age within
+   60 s, `jti` not replayed. A bound token presented as Bearer is refused on any route (RFC 9449 §7.1). The resource
+   publishes `dpop_bound_access_tokens_required: true` and takes the token from either scheme.
+
+The upstream check compared the thumbprint with `cnf.jkt` but never verified the proof's signature - anyone with a
+stolen token could name the victim's key in a proof header and pass - nor `ath`, `htu`, age or replay.
+`dpop_test.go` covers each.
 
 ## Shared Signals
 
@@ -54,17 +74,17 @@ PingFederate's JWKS, and refuses tokens at once:
 | RISC `account-disabled` | every token refused, until |
 | RISC `account-enabled` | lifts it |
 
-Subjects are `iss_sub` - `iss` PingFederate, `sub` the agent's `client_id`, as in its tokens - or `opaque` (the
-`client_id`). `session-revoked` needs the token's `iat`, which PingFederate's token manager leaves out unless told
+Subjects are `iss_sub` - `iss` PingFederate, `sub` the agent's `client_id`, as in its tokens - or `opaque`: the
+`client_id`, or **one instance's key thumbprint** (its tokens' `cnf.jkt`), which refuses that instance alone while the
+agent's other instances carry on. `session-revoked` needs the token's `iat`, which PingFederate's token manager leaves out unless told
 (`Include Issued At Claim`, `../terraform/resource.tf`); a token without one is refused, the safe way round.
 
 Without it, a withdrawn agent keeps working until the resource's cache (300 s) and its registration at PingFederate
 (about 20 minutes) run out - Raidiam cannot push into the network. With it the gateway refuses within a poll, about
 two seconds (harness stage `signals`; events raised through PingFederate's `/ssf/events:emit`).
 
-Next transmitters: the agent provider (an instance it stops attesting) and the marketplace (an agent it suspends) -
-both inside the network. Revoking one instance rather than the agent needs instance-bound tokens (`cnf`), which these
-are not yet.
+Next transmitters: the agent provider (an instance it stops attesting - the subject its key thumbprint) and the
+marketplace (an agent it suspends) - both inside the network.
 
 ## The policy, for now
 
