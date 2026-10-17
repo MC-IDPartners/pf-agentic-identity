@@ -57,7 +57,15 @@ def pf_verify():
 # ── Raidiam directory ──────────────────────────────────────────────────────────────────────────────
 
 def find_authorisation_server(directory_url: str, server_id: str = None, server_name: str = None) -> dict:
-    resp = requests.get(_strip(directory_url) + "/participants", timeout=15)
+    # The participants export is public and rate-limited (429): back off and try again rather than fail - a
+    # container that crashes on it restarts straight into the limit again.
+    for attempt in range(6):
+        resp = requests.get(_strip(directory_url) + "/participants", timeout=15)
+        if resp.status_code != 429:
+            break
+        wait = int(resp.headers.get("Retry-After") or 0) or min(5 * 2 ** attempt, 60)
+        print(f"directory: rate-limited (429), retrying in {wait} s", flush=True)
+        time.sleep(wait)
     resp.raise_for_status()
     candidates = []
     for org in resp.json():

@@ -108,7 +108,7 @@ services:
       # The agent provider (../raidiam/provider.sh; its own Raidiam software statement): when set, this host also
       # serves the provider's Entity Configuration at PROVIDER_ID, publishing the attester's key, and the client's
       # bindings name the provider as the attestations' issuer. up.sh needs the same RAIDIAM_PROVIDER_ID.
-      PROVIDER_ID: ${RAIDIAM_PROVIDER_ID-}
+      PROVIDER_ID: ${RAIDIAM_PROVIDER_ID:-https://host.docker.internal:8443}
       PROVIDER_KEY_FILE: /provider/entity.private.jwk.json
       ATTESTER_JWKS_FILE: /provider/attester.public.jwks.json
       # The provider's /attest (the agent-r flow): it signs attestations itself with this key.

@@ -19,6 +19,10 @@ ENV KONG_PROXY_LISTEN="0.0.0.0:8446 ssl"
 ENV KONG_SSL_CERT=/tls/tls.crt
 ENV KONG_SSL_CERT_KEY=/tls/tls.key
 ENV KONG_ADMIN_LISTEN=off
+# Re-resolve service names (coaz-pep, the resources) every 10 s: a recreated container comes back on a new address, and
+# Kong's DNS cache would otherwise keep sending to the old one - every request then a 503 (fail closed).
+ENV KONG_DNS_VALID_TTL=10
+ENV KONG_DNS_STALE_TTL=0
 # The plugin forwards the JSON-RPC body; keep it in memory, not spooled to a file.
 ENV KONG_NGINX_HTTP_CLIENT_BODY_BUFFER_SIZE=64k
 ENV KONG_NGINX_HTTP_CLIENT_MAX_BODY_SIZE=64k
