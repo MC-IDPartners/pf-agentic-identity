@@ -4,6 +4,7 @@ checks - things the agent itself would refuse to try. Prints one JSON line per p
     python probe.py                              # gateway, PDP and DPoP probes
     PROBE=ssf EMIT_SECRET=... python probe.py    # Shared Signals: revoke, disable and re-enable the agent, then one
                                                  # instance of it while another carries on
+    PROBE=emit EMIT_EVENT=... EMIT_SUB=... EMIT_SECRET=... python probe.py   # raise one event
 
 Each "instance" is a key of its own, attested by the provider on this container's SVID - two copies of the agent - and
 each token is DPoP-bound to its instance's key.
@@ -121,6 +122,12 @@ def signals():
     out["instance_ok_after_s"] = until(one, token_one, 200)
     print("PROBE " + json.dumps(out), flush=True)
 
+
+if os.environ.get("PROBE") == "emit":
+    # One event about one agent (EMIT_EVENT, EMIT_SUB), for harness.py's agents-calling-agents stage.
+    count = emit(os.environ["EMIT_EVENT"], {"format": "iss_sub", "iss": issuer, "sub": os.environ["EMIT_SUB"]})
+    print("PROBE " + json.dumps({"name": "emit", "streams": count}), flush=True)
+    raise SystemExit(0)
 
 if os.environ.get("PROBE") == "ssf":
     signals()

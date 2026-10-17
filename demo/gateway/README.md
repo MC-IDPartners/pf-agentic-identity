@@ -91,14 +91,69 @@ two seconds (harness stage `signals`; events raised through PingFederate's `/ssf
 Next transmitters: the agent provider (an instance it stops attesting - the subject its key thumbprint) and the
 marketplace (an agent it suspends) - both inside the network.
 
-## The policy, for now
+## Agents calling agents
 
-PingAuthorize runs the upstream demo's **banking** package: it permits `list_accounts` and `get_balance`, denies a
-payment over 2000, and needs step-up between 500 and 2000. It pins the audience to its own demo's
-(`https://api.northwind.example/bank`), so the PEP - which has verified the audience itself - doesn't send it
-(`omit_token_aud`). Its consent and proofing lookups call that demo's Railway services; the rig's flows don't reach
-them.
+A **Principal** agent (the rig's first agent, `…/agent/spire-client`) has work done by two agents it finds through
+the federation: the **Accounts agent** and the **Payments agent**, each acting on its behalf.
 
-Next: the rig's own policy, authored in the PingAuthorize PAP 11.1 (a deployment package is digest-sealed - it can only
-come from the PAP), deciding on federation facts - the agent's capabilities and trust marks from Raidiam, its
-attester, its SPIFFE ID - from a federation PIP.
+```
+Principal ──(OIDF: agents by capability, interface "agent")──▶ Accounts agent / Payments agent
+   │ token aud = the agent, DPoP from the Principal's instance key
+   ▼
+Kong :8443 (the provider's edge) ─▶ coaz-pep ─▶ PingAuthorize ─▶ the agent (sub_agent.py)
+                                                                    │ token exchange (RFC 8693) at PingFederate
+                                                                    │ sub = Principal, act = {sub: the agent},
+                                                                    │ aud = its resource, cnf = its own instance key
+                                                                    ▼
+                                 Kong :8446 / :8447 ─▶ coaz-pep ─▶ PingAuthorize ─▶ rs-accounts / rs-payments
+                                                                                    (both agents' capabilities
+                                                                                     checked in Raidiam)
+```
+
+| Piece | What |
+|---|---|
+| The agents (`../spire-workload/sub_agent.py`) | CBA's pattern (`invoice-settler-b-7`): one entity, a client **and** a resource (`interface: agent`) - a Raidiam software statement whose ClientId is `<provider>/agent/<name>`, and an ApiResource with that `resource`, joined by the identifier. Each runs under its own SPIRE identity (`spiffe://example.org/<name>`), is attested by the provider, and serves MCP at `<its id>/mcp/v1` |
+| The provider (entity-host, `HOSTED_AGENTS`) | Hosts their Entity Configurations (with `oauth_resource` metadata), bindings and registrations, beside the Principal's |
+| Kong on **8443** (`kong/provider.yml.template`) | The provider's edge: an agent's MCP must live under its identifier, on the provider's origin. `/agent/<name>/mcp` through coaz-pep (audience = that agent); everything else to entity-host |
+| Kong on **8447** | rs-payments (`rs_accounts.py`, `RESOURCE_KIND=payments`): `pay_invoice`, `payment_initiation` |
+| PingFederate (`../terraform/token-exchange.tf`, `resource.tf`) | A token manager per resource (each its own `aud`); a JWT processor for its own tokens as subject tokens; the delegation policy as the default (federated clients cannot be given one); `act` stamped per resource - a literal, since PingFederate 13 refuses an OGNL `act` - and emitted **as a JSON string**, not the object RFC 8693 asks for (the token manager has no option for it). The PEP and the resource read both |
+| coaz-pep | An audience per route (`token_audience`); a signal about any party in a token - client, `sub`, `act.sub`, the bound instance - refuses it |
+| rs-accounts / rs-payments | Check **every** agent in a delegated token holds the capability: a Principal cannot reach through an agent what it does not hold, nor the other way round |
+
+`docker compose run --rm agent pay-invoice` runs the Principal's job (`INVOICE_AMOUNT`, default 420): it finds both
+agents, has the Accounts agent read the operating account, and the Payments agent pay if the funds cover it. The
+harness's `a2a` stage checks each hop's delegation (`sub`, `act`, audience, the sub-agent's own key), the resources'
+decisions, an over-limit invoice refused by PingAuthorize at the first hop, and the Payments agent disabled by a
+signal while the Accounts agent carries on.
+
+Raidiam, per agent: the software statement, its entity and bridge keys (`AGENT=<name> ../raidiam/attested-client.sh`),
+the ApiResource (family "POC Banking Agents") and roles - `cba.agentic.member` plus a capability role
+(`cba.agentic.servicing.assistant` for `accounts_read`, `cba.agentic.ap.orchestrator` for `payment_initiation`). The
+Principal holds `cba.agentic.ap.orchestrator` too: it cannot delegate what it does not hold.
+
+## The policy
+
+The rig's own, authored in the PingAuthorize Policy Editor (PAP 11.1, `pingauthorize-pap`, `https://localhost:8448`)
+through its REST API: `pingauthorize/author-policy.py` builds it on branch `rig`, commits, and exports the sealed
+deployment package the PDP loads (`pingauthorize/rig.deploymentpackage`; embedded mode). A package is digest-sealed,
+so it only ever comes from the PAP.
+
+| Rule | Effect |
+|---|---|
+| `list_accounts`, `get_balance`, `access_mcp` | permit |
+| `make_payment` | permit |
+| `make_payment` over the limit (`--limit`, default 1000) | deny (deny overrides permit) |
+| anything else | not permitted |
+
+The attributes come from the AuthZEN servlet's request: `actionName` (else the `action` object's `$.name`) and
+`amount` (else the `context` object's `$.amount`, which the COAZ mapping puts there).
+
+```bash
+docker compose up -d pingauthorize-pap
+python ../gateway/pingauthorize/author-policy.py --limit 1000     # -> rig.deploymentpackage
+docker compose build pingauthorize && docker compose up -d --force-recreate pingauthorize
+```
+
+Next: decisions on federation facts - the agents' capabilities and trust marks from Raidiam, their attester and
+SPIFFE ID - through a federation PIP; today the resources check capabilities, the PDP the actions and limits.
+`omit_token_aud` stays until the policy reads the audience.

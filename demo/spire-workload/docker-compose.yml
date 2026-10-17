@@ -143,7 +143,9 @@ services:
       TRUST_ANCHOR: ${TRUST_ANCHOR:-https://federation.directory.cba.raidiam.io/federation_entity/ff726945-ebd7-45e2-9869-c11227669433}
       TRUST_ANCHOR_ENV_FILE: /fed/vars.raidiam.env
       # The network's own resources, which Raidiam cannot reach and so does not list.
-      RESOURCE_IDS: ${RAIDIAM_RESOURCE_ID:-https://host.docker.internal:8446}
+      # ...and the agents it may call (agents calling agents), which Raidiam cannot list either.
+      RESOURCE_IDS: ${RAIDIAM_RESOURCE_ID:-https://host.docker.internal:8446},${RAIDIAM_PAYMENTS_RESOURCE_ID:-https://host.docker.internal:8447},${RAIDIAM_PROVIDER_ID:-https://host.docker.internal:8443}/agent/accounts-agent,${RAIDIAM_PROVIDER_ID:-https://host.docker.internal:8443}/agent/payments-agent
+      INVOICE_AMOUNT: ${INVOICE_AMOUNT:-420}
       DIRECTORY_URL: ${DIRECTORY_URL:-https://data.directory.cba.raidiam.io}
       AUTHORISATION_SERVER_ID: ${AUTHORISATION_SERVER_ID:-9b0983ce-781e-4f58-8620-0a752aafa054}
       ISSUER_HOST_OVERRIDE: host.docker.internal:${PF_PORT_HTTPS:-9031}

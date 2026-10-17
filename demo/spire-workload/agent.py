@@ -46,6 +46,12 @@ JOBS = {
                     "args": {"account_id": "acc-002"}},
     "pay-supplier": {"label": "Supplier payment", "capability": "payment_initiation", "tool": "pay_supplier",
                      "args": {"invoice_id": "inv-001"}},
+    # The Principal's job: other agents do the work - found through the federation by what they can do - each
+    # acting on its behalf by token exchange (../gateway/README.md, "Agents calling agents").
+    "pay-invoice": {"label": "Pay supplier invoice INV-1 if the operating account can cover it",
+                    "capability": "payment_initiation", "needs": ["accounts_read", "payment_initiation"],
+                    "orchestrate": {"account_id": "acc-001", "invoice_id": "INV-1", "to_account": "supplier-77",
+                                    "amount": float(os.environ.get("INVOICE_AMOUNT", "420"))}},
     # Outside the Principal's envelope (Raidiam grants it no lending capability): refused before a request is built.
     "loan-balance": {"label": "Business loan balance", "capability": "lending_read", "tool": "get_loan_balance",
                      "args": {"loan_id": "loan-001"}},
@@ -203,6 +209,56 @@ async def call_mcp(endpoint: str, access_token: str, tool: str, args: dict, key=
             return json.loads(text)
 
 
+def orchestrate(job: dict, agent: str, attestation: str, key, resolver, authority, anchor, local, ca, usable_as):
+    """Agents calling agents: find, through the federation, the agents that can read accounts and initiate
+    payments (interface "agent", protected by usable_as), and have them do it - each exchanging this agent's token
+    for one at its own resource, acting on this agent's behalf."""
+    task = job["orchestrate"]
+    resources = discover_resources(resolver, authority, anchor, local, ca)
+    agents = [r for r in resources if r.get("https://cba.com.au/federation/interface") == "agent"
+              and usable_as.rstrip("/") in [x.rstrip("/") for x in r.get("authorization_servers") or []]]
+
+    def pick(capability):
+        found = next((r for r in agents if capability in (r.get("authorization_details_types_supported") or [])), None)
+        if not found:
+            raise Refused("discover", f"no agent in the federation offers {capability} through {usable_as}")
+        say("discover", f"{capability}: {found['entity_id']} ({found.get('resource_name')})")
+        return found
+
+    accounts_agent, payments_agent = pick("accounts_read"), pick("payment_initiation")
+    record("discover", resources=len(resources), agents=[r["entity_id"] for r in agents],
+           accounts_agent=accounts_agent["entity_id"], payments_agent=payments_agent["entity_id"])
+
+    def ask(callee: dict, tool: str, args: dict, step: str) -> dict:
+        tok = token(usable_as, callee["resource"], agent, attestation, key)
+        endpoint = (callee.get("endpoints") or [callee["resource"].rstrip("/") + "/mcp/v1"])[0]
+        try:
+            answer = asyncio.run(call_mcp(endpoint, tok, tool, args, key))
+        except Exception as e:
+            reason = next((str(x) for x in getattr(e, "exceptions", [e]) for x in getattr(x, "exceptions", [x])), str(e))
+            record(step, agent=callee["entity_id"], tool=tool, refused=reason)
+            raise Refused(step, f"{callee.get('resource_name')} refused {tool}: {reason}")
+        if answer.get("error"):
+            record(step, agent=callee["entity_id"], tool=tool, refused=answer.get("detail") or answer["error"],
+                   delegation=answer.get("delegation"))
+            raise Refused(step, f"{callee.get('resource_name')} could not {tool}: {answer.get('detail') or answer['error']}")
+        record(step, agent=callee["entity_id"], tool=tool, delegation=answer.get("delegation"),
+               decision=(answer.get("result") or {}).get("decision"))
+        d = answer.get("delegation") or {}
+        say(step, f"{callee.get('resource_name')} acted for {d.get('sub')} as {d.get('client_id')} "
+                  f"(act {d.get('act')}) at {d.get('aud')}, bound to its own key {d.get('cnf_jkt')}")
+        return answer.get("result") or {}
+
+    balance = ask(accounts_agent, "account_balance", {"account_id": task["account_id"]}, "accounts")
+    say("accounts", f"{task['account_id']} has {balance.get('available')} {balance.get('currency')} available")
+    if (balance.get("available") or 0) < task["amount"]:
+        raise Refused("accounts", f"{task['account_id']} cannot cover {task['amount']}")
+    paid = ask(payments_agent, "pay_invoice", {"invoice_id": task["invoice_id"], "from_account": task["account_id"],
+                                               "to_account": task["to_account"], "amount": task["amount"]}, "payments")
+    say("payments", f"{task['invoice_id']}: {paid.get('status')} as {paid.get('payment_id')} for {paid.get('amount')}")
+    print(json.dumps({"balance": balance, "payment": paid}, indent=2), flush=True)
+
+
 def main() -> None:
     agent = os.environ["AGENT_ID"]
     provider = os.environ["AGENT_PROVIDER"].rstrip("/")
@@ -251,12 +307,22 @@ def main() -> None:
                          f"({envelope or 'empty'}). The bank sets it on the agent's registration in Raidiam.")
     if "client_credentials" not in (rp.get("grant_types") or []):
         raise Refused("envelope", "refused: this agent is not governed to act as itself (no client_credentials)")
+    missing = [c for c in job.get("needs", []) if c not in envelope]
+    if missing:
+        raise Refused("envelope", f"refused before a request was built: {missing} not in this agent's envelope")
+    if job.get("orchestrate"):
+        usable_as = os.environ.get("AUTHORISATION_SERVER") or federation.find_authorisation_server(
+            os.environ["DIRECTORY_URL"], os.environ.get("AUTHORISATION_SERVER_ID"))["Issuer"]
+        orchestrate(job, agent, attestation, key, resolver, authority, anchor, local, ca, usable_as)
+        return
 
     # 4. Which service, behind which authorisation server.
     resources = discover_resources(resolver, authority, anchor, local, ca)
     usable_as = os.environ.get("AUTHORISATION_SERVER") or federation.find_authorisation_server(
         os.environ["DIRECTORY_URL"], os.environ.get("AUTHORISATION_SERVER_ID"))["Issuer"]
-    candidates = [res for res in resources if job["capability"] in (res.get("authorization_details_types_supported") or [])]
+    # A resource server serves the job (interface mcp); an agent others call (interface agent) is for orchestration.
+    candidates = [res for res in resources if job["capability"] in (res.get("authorization_details_types_supported") or [])
+                  and res.get("https://cba.com.au/federation/interface", "mcp") != "agent"]
     for res in candidates:
         if usable_as.rstrip("/") not in [a.rstrip("/") for a in res.get("authorization_servers") or []]:
             say("discover", f"skip {res['entity_id']}: protected by {res.get('authorization_servers')}, not {usable_as}")

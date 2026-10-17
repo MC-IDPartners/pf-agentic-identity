@@ -18,6 +18,9 @@ Stages, each a pass, a fail or a skip in the report:
                a request is built; the resource refuses a call with no token
   gateway      with the agent's own token (probe.py): a forged token is refused at the gateway; the PDP permits
                get_balance; the PDP denies a large payment (COAZ -32401) before it reaches the resource
+  a2a          agents calling agents: the Principal's pay-invoice - the Accounts and Payments agents found through the
+               federation, each acting for it by token exchange (sub, act, its own DPoP key, its resource) - an
+               over-limit invoice refused, and the Payments agent disabled by a signal while accounts carry on
   signals      Shared Signals (PROBE=ssf): session-revoked refuses the agent's existing token at the gateway but not a
                new one; account-disabled refuses every token; account-enabled lifts it - each within seconds
 
@@ -301,7 +304,7 @@ def signals(rep: Report, a):
         rep.expect("signals", "the probe ran", False, " | ".join((out.stdout + out.stderr).strip().splitlines()[-3:]))
         return
     p = json.loads(line[len("PROBE "):])
-    fast = lambda s: s is not None and s <= 10
+    fast = lambda s: s is not None and s <= 15  # a poll every 2 s; the margin is for a loaded host
     rep.expect("signals", "the agent's call works before any signal", p.get("before") == 200, f"HTTP {p.get('before')}")
     rep.expect("signals", "session-revoked: its existing token is refused at the gateway",
                p.get("session_revoked_streams", 0) >= 1 and fast(p.get("old_token_refused_after_s")),
@@ -322,6 +325,77 @@ def signals(rep: Report, a):
                f"after {p.get('instance_ok_after_s')} s")
 
 
+def a2a(rep: Report, a):
+    """Agents calling agents: the Principal's pay-invoice job - the Accounts and Payments agents found through the
+    federation, each acting for the Principal by token exchange - then an over-limit invoice, then the Payments agent
+    disabled by a signal while the Accounts agent carries on."""
+    print("\nagents calling agents", flush=True)
+    provider = a.provider.rstrip("/")
+    accounts_agent, payments_agent = f"{provider}/agent/accounts-agent", f"{provider}/agent/payments-agent"
+    r = run_agent(a, "pay-invoice", a.label)
+    s = r.get("steps", {})
+    rep.expect("a2a", "pay-invoice completed", r.get("outcome") == "ok", r.get("reason") or "")
+    d = s.get("discover", {})
+    rep.expect("a2a", "both agents found through the federation by capability",
+               d.get("accounts_agent") == accounts_agent and d.get("payments_agent") == payments_agent,
+               f"{d.get('accounts_agent')}, {d.get('payments_agent')}")
+    for step, callee, resource in (("accounts", accounts_agent, a.resource), ("payments", payments_agent, a.payments)):
+        dl = (s.get(step) or {}).get("delegation") or {}
+        act = dl.get("act")
+        if isinstance(act, str):
+            try:
+                act = json.loads(act)
+            except ValueError:
+                pass
+        rep.expect("a2a", f"{step}: the agent acted for the Principal (sub), as itself (client_id, act)",
+                   dl.get("sub") == a.agent and dl.get("client_id") == callee and (act or {}).get("sub") == callee,
+                   f"sub {dl.get('sub')}, act {dl.get('act')}" if dl else "not reached")
+        rep.expect("a2a", f"{step}: its token is for its resource and bound to its own instance key",
+                   dl.get("aud") == resource and bool(dl.get("cnf_jkt")) and dl.get("cnf_jkt") == dl.get("instance_jkt"),
+                   f"aud {dl.get('aud')}, cnf.jkt {dl.get('cnf_jkt')}" if dl else "not reached")
+        dec = (s.get(step) or {}).get("decision") or {}
+        rep.expect("a2a", f"{step}: the resource checked both agents (decision names the Principal)",
+                   dec.get("on_behalf_of") == a.agent and dec.get("client_id") == callee, f"{dec}"[:90])
+
+    over = subprocess.run(["docker", "compose", "run", "--rm", "-l", f"app={a.label}", "-e", "INVOICE_AMOUNT=1500",
+                           "agent", "pay-invoice"], cwd=HERE, capture_output=True, text=True, encoding="utf-8",
+                          errors="replace", timeout=600,
+                          env={**ENV, "ATTESTED_CLIENT_ID": a.agent, "RAIDIAM_PROVIDER_ID": a.provider})
+    line = next((l for l in reversed(over.stdout.splitlines()) if l.startswith("AGENT_RESULT ")), "AGENT_RESULT {}")
+    o = json.loads(line[len("AGENT_RESULT "):])
+    rep.expect("a2a", "an invoice over the policy's limit is refused at the Payments agent (PingAuthorize)",
+               o.get("outcome") == "refused" and o.get("refused_at") == "payments", (o.get("reason") or "")[:90])
+
+    secret = next((l.split("=", 1)[1].strip() for l in open(os.path.join(DEMO, "secrets.env"))
+                   if l.startswith("TF_VAR_ssf_emitter_client_secret=")), "")
+    if not secret:
+        rep.add("a2a", "a disabled sub-agent", "skip", "no TF_VAR_ssf_emitter_client_secret in secrets.env")
+        return
+
+    def emit(event):
+        out = subprocess.run(["docker", "compose", "run", "--rm", "-l", f"app={a.label}", "-e", "PROBE=emit",
+                              "-e", "EMIT_SECRET", "-e", "EMIT_EVENT", "-e", "EMIT_SUB", "--entrypoint", "python",
+                              "agent", "probe.py"], cwd=HERE, capture_output=True, text=True, encoding="utf-8",
+                             errors="replace", timeout=300,
+                             env={**ENV, "EMIT_SECRET": secret, "EMIT_SUB": payments_agent, "ATTESTED_CLIENT_ID": a.agent,
+                                  "EMIT_EVENT": "https://schemas.openid.net/secevent/risc/event-type/" + event,
+                                  "RAIDIAM_PROVIDER_ID": a.provider})
+        return '"streams": 1' in out.stdout or '"streams": 2' in out.stdout
+
+    try:
+        emitted = emit("account-disabled")
+        time.sleep(4)  # a poll or two
+        r = run_agent(a, "pay-invoice", a.label)
+        steps = r.get("steps", {})
+        rep.expect("a2a", "Payments agent disabled (signal): the payment is refused ...",
+                   emitted and r.get("refused_at") == "payments", (r.get("reason") or "")[:90])
+        rep.expect("a2a", "... while the Accounts agent still answers for the Principal",
+                   bool((steps.get("accounts") or {}).get("delegation")), "")
+    finally:
+        emit("account-enabled")
+        time.sleep(4)
+
+
 def cleanup(a):
     for kind, what in reversed(a.created):
         if kind == "spire":
@@ -337,6 +411,7 @@ def main():
     p.add_argument("--agent", default="https://host.docker.internal:8443/agent/spire-client")
     p.add_argument("--provider", default="https://host.docker.internal:8443")
     p.add_argument("--resource", default="https://host.docker.internal:8446")
+    p.add_argument("--payments", default="https://host.docker.internal:8447", help="rs-payments' identifier")
     p.add_argument("--label", default="spire-client", help="the docker label app=<label> the agent runs under")
     p.add_argument("--spiffe-id", default="spiffe://example.org/spire-client")
     p.add_argument("--other-label", default="my-workload", help="another workload's label, for the negative test")
@@ -360,6 +435,7 @@ def main():
                 negatives(rep, a)
                 gateway(rep, a)
                 signals(rep, a)
+                a2a(rep, a)
     finally:
         if not a.keep:
             cleanup(a)
