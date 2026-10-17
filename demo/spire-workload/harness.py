@@ -108,7 +108,10 @@ def preflight(rep: Report, a) -> bool:
         for row in item if isinstance(item, list) else [item]:
             if row.get("State") == "running":
                 running.add(row.get("Service"))
-    for svc in ("entity-host", "spire-oidc", "rs-accounts", "gateway", "coaz-pep", "pingauthorize"):
+    # gateway-provider is https://host.docker.internal:8443 - the provider and its agents. Freeing 8443 for something
+    # else stops it, and with it every agent's configuration, /attest and the sub-agents' MCP.
+    for svc in ("entity-host", "spire-oidc", "rs-accounts", "rs-payments", "accounts-agent", "payments-agent",
+                "gateway", "gateway-payments", "gateway-provider", "coaz-pep", "pingauthorize"):
         rep.expect("preflight", f"{svc} is running", svc in running,
                    "" if svc in running else f"docker compose up -d {svc}")
     if "entity-host" not in running:
