@@ -59,8 +59,16 @@ def pf_verify():
 def find_authorisation_server(directory_url: str, server_id: str = None, server_name: str = None) -> dict:
     # The participants export is public and rate-limited (429): back off and try again rather than fail - a
     # container that crashes on it restarts straight into the limit again.
+    # A connection or TLS failure is retried too: one network blip should not end a run.
     for attempt in range(6):
-        resp = requests.get(_strip(directory_url) + "/participants", timeout=15)
+        try:
+            resp = requests.get(_strip(directory_url) + "/participants", timeout=15)
+        except requests.RequestException as e:
+            if attempt == 5:
+                raise
+            print(f"directory: {type(e).__name__}, retrying in {2 ** attempt} s", flush=True)
+            time.sleep(2 ** attempt)
+            continue
         if resp.status_code != 429:
             break
         wait = int(resp.headers.get("Retry-After") or 0) or min(5 * 2 ** attempt, 60)

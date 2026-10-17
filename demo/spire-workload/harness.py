@@ -3,6 +3,8 @@
     python harness.py                      # the rig's agent, https://host.docker.internal:8443/agent/spire-client
     python harness.py --keep               # leave whatever it created (the SPIRE entry) in place
     python harness.py --report out.json    # also write the report as JSON
+    python harness.py --brief              # one line per check (the default is verbose: each check's PoC objectives,
+                                           # what it proves and its evidence, then the objectives' coverage)
 
 Stages, each a pass, a fail or a skip in the report:
 
@@ -35,9 +37,12 @@ import os
 import re
 import subprocess
 import sys
+import textwrap
 import time
 import urllib.request
 from urllib.parse import quote
+
+import objectives
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 DEMO = os.path.dirname(HERE)
@@ -77,27 +82,86 @@ def raidiam_fetch(sub: str):
 
 
 class Report:
-    def __init__(self):
-        self.rows = []
+    """Each check with the PoC objectives it evidences (objectives.py), what passing it proves, and its evidence;
+    --brief prints one line per check, as before."""
 
-    def add(self, stage: str, check: str, status: str, detail: str = ""):
-        self.rows.append({"stage": stage, "check": check, "status": status, "detail": detail})
+    WIDTH = 110
+
+    def __init__(self, verbose: bool = True):
+        self.rows, self.verbose = [], verbose
+
+    def stage(self, name: str, title: str = None):
+        intro, tcs = objectives.STAGES.get(name, ("", []))
+        if not self.verbose:
+            print(f"\n{title or name}", flush=True)
+            return
+        print("\n" + "=" * self.WIDTH, flush=True)
+        print(f"{name.upper()}" + (f"  {title}" if title else "") + (f"    [{' '.join(tcs)}]" if tcs else ""), flush=True)
+        if intro:
+            print(textwrap.fill(intro, self.WIDTH, initial_indent="  ", subsequent_indent="  "), flush=True)
+        print("-" * self.WIDTH, flush=True)
+
+    def add(self, stage: str, check: str, status: str, detail: str = "", evidence: list = None):
+        tcs, why = objectives.classify(check)
+        self.rows.append({"stage": stage, "check": check, "status": status, "detail": detail, "objectives": tcs,
+                          "proves": why, "evidence": evidence or []})
         mark = {"pass": "PASS", "fail": "FAIL", "skip": "SKIP"}[status]
-        print(f"  {mark:4}  {stage:10} {check}" + (f"  - {detail}" if detail else ""), flush=True)
+        if not self.verbose:
+            print(f"  {mark:4}  {stage:10} {check}" + (f"  - {detail}" if detail else ""), flush=True)
+            return
+        print(f"  {mark:4}  {check}" + (f"    [{' '.join(tcs)}]" if tcs else ""), flush=True)
+        wrap = lambda label, text: textwrap.fill(text, self.WIDTH, initial_indent=f"        {label:9} ",
+                                                 subsequent_indent=" " * 18)
+        if why:
+            print(wrap("proves:", why), flush=True)
+        if detail:
+            print(wrap("evidence:", detail), flush=True)
+        for line in evidence or []:
+            print(wrap("", line), flush=True)
 
-    def expect(self, stage: str, check: str, ok: bool, detail: str = ""):
-        self.add(stage, check, "pass" if ok else "fail", detail)
+    def expect(self, stage: str, check: str, ok: bool, detail: str = "", evidence: list = None):
+        self.add(stage, check, "pass" if ok else "fail", detail, evidence)
         return ok
 
     @property
     def failed(self):
         return [r for r in self.rows if r["status"] == "fail"]
 
+    def coverage(self) -> list:
+        """Each PoC objective: what the run evidenced for it, or why the harness cannot."""
+        out = []
+        for tc, (title, domain) in objectives.OBJECTIVES.items():
+            rows = [r for r in self.rows if tc in r["objectives"]]
+            passed = sum(r["status"] == "pass" for r in rows)
+            failed = sum(r["status"] == "fail" for r in rows)
+            if failed:
+                state = "FAILING"
+            elif passed:
+                state = "evidenced"
+            elif rows:
+                state = "not run"
+            else:
+                state = "out of scope"
+            note = objectives.OUT_OF_SCOPE.get(tc, "") if state != "evidenced" or tc in ("TC-02", "TC-25") else ""
+            out.append({"objective": tc, "title": title, "domain": domain, "state": state, "passed": passed,
+                        "failed": failed, "checks": len(rows), "note": note})
+        return out
+
+    def print_coverage(self):
+        print("\n" + "=" * self.WIDTH, flush=True)
+        print("POC OBJECTIVES (Agentic IDAM - Trust Controller PoC Objectives, 10 July 2026)", flush=True)
+        print("-" * self.WIDTH, flush=True)
+        for c in self.coverage():
+            counts = f"{c['passed']}/{c['checks']}" if c["checks"] else "-"
+            print(f"  {c['objective']}  {c['state']:12} {counts:>6}  {c['title']}", flush=True)
+            if c["note"]:
+                print(f"{'':30}{c['note']}", flush=True)
+
 
 # ── stages ──────────────────────────────────────────────────────────────────────────────────────────
 
 def preflight(rep: Report, a) -> bool:
-    print("\npreflight", flush=True)
+    rep.stage("preflight")
     ps = compose("ps", "--format", "json")
     running = set()
     for line in ps.stdout.splitlines():
@@ -172,7 +236,7 @@ def registration_current(a) -> bool:
 
 
 def spire_entry(rep: Report, a) -> bool:
-    print("\nspire", flush=True)
+    rep.stage("spire")
     server = ["docker", "exec", a.spire_server, "/opt/spire/bin/spire-server"]
     shown = sh(*server, "entry", "show", "-spiffeID", a.spiffe_id)
     if f"docker:label:app:{a.label}" in shown.stdout:
@@ -200,7 +264,7 @@ def run_agent(a, job: str, label: str) -> dict:
 
 
 def run(rep: Report, a) -> dict:
-    print(f"\nrun: {a.job} as {a.agent}", flush=True)
+    rep.stage("run", f"{a.job} as {a.agent}")
     r = run_agent(a, a.job, a.label)
     s = r.get("steps", {})
     rep.expect("run", "the run completed", r.get("outcome") == "ok",
@@ -230,7 +294,7 @@ def run(rep: Report, a) -> dict:
 
 
 def negatives(rep: Report, a):
-    print("\nnegatives", flush=True)
+    rep.stage("negatives")
     r = run_agent(a, a.job, a.other_label)
     att = r.get("steps", {}).get("attest", {})
     rep.expect("negatives", f"a container labelled app={a.other_label} is refused at /attest",
@@ -252,7 +316,7 @@ def negatives(rep: Report, a):
 
 def gateway(rep: Report, a):
     """The gateway in front of the resource, and the PDP behind it, probed with the agent's own token (probe.py)."""
-    print("\ngateway", flush=True)
+    rep.stage("gateway")
     out = compose("run", "--rm", "-l", f"app={a.label}", "--entrypoint", "python", "agent", "probe.py",
                   env={"ATTESTED_CLIENT_ID": a.agent, "RAIDIAM_PROVIDER_ID": a.provider, "RAIDIAM_RESOURCE_ID": a.resource})
     probes = {}
@@ -291,7 +355,7 @@ def gateway(rep: Report, a):
 def signals(rep: Report, a):
     """Shared Signals: PingFederate's transmitter, the PEP's stream (probe.py PROBE=ssf). The probe raises the events
     as the transmitter's operator (conformance-ssf-emitter), whose secret comes from ../secrets.env."""
-    print("\nsignals", flush=True)
+    rep.stage("signals")
     secret = next((l.split("=", 1)[1].strip() for l in open(os.path.join(DEMO, "secrets.env"))
                    if l.startswith("TF_VAR_ssf_emitter_client_secret=")), "")
     if not secret:
@@ -332,7 +396,7 @@ def a2a(rep: Report, a):
     """Agents calling agents: the Principal's pay-invoice job - the Accounts and Payments agents found through the
     federation, each acting for the Principal by token exchange - then an over-limit invoice, then the Payments agent
     disabled by a signal while the Accounts agent carries on."""
-    print("\nagents calling agents", flush=True)
+    rep.stage("a2a", "agents calling agents")
     provider = a.provider.rstrip("/")
     accounts_agent, payments_agent = f"{provider}/agent/accounts-agent", f"{provider}/agent/payments-agent"
     r = run_agent(a, "pay-invoice", a.label)
@@ -399,6 +463,24 @@ def a2a(rep: Report, a):
         time.sleep(4)
 
 
+def decisions_logged(rep: Report, a):
+    """TC-18: every decision the gateway's PEP made during the run is in its log, with principal and reason."""
+    rep.stage("logging", "trust decisions logged")
+    since = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(a.started - 5))
+    lines = compose("logs", "--no-log-prefix", "--since", since, "coaz-pep").stdout.splitlines()
+    permits = [l for l in lines if " PERMIT " in l]
+    denies = [l for l in lines if " DENY " in l]
+    refused = [l for l in lines if "refused" in l]
+    signals = [l for l in lines if "ssf: " in l]
+    # Each sample from its message on: past the timestamp, at the PEP's label or the receiver's "ssf:".
+    sample = [l[min(i for i in (l.find("["), l.find("ssf: ")) if i >= 0):][:220]
+              for l in (permits[:1] + denies[:1] + refused[:1] + signals[:1])]
+    rep.expect("logging", "decisions are logged at the gateway with principal and reason",
+               bool(permits) and bool(denies) and bool(refused),
+               f"{len(permits)} permits, {len(denies)} PDP denials, {len(refused)} refusals (token, DPoP, signal), "
+               f"{len(signals)} signals received - in coaz-pep's log since the run began", sample)
+
+
 def cleanup(a):
     for kind, what in reversed(a.created):
         if kind == "spire":
@@ -424,12 +506,13 @@ def main():
     p.add_argument("--skip-negatives", action="store_true")
     p.add_argument("--keep", action="store_true", help="leave what the harness created")
     p.add_argument("--report", help="write the report as JSON here")
+    p.add_argument("--brief", action="store_true", help="one line per check, no objectives, explanations or evidence")
     a = p.parse_args()
     a.created = []
 
-    rep = Report()
+    rep = Report(verbose=not a.brief)
     print(f"harness: {a.agent} ({a.spiffe_id}), job {a.job}", flush=True)
-    started = time.time()
+    started = a.started = time.time()
     result = None
     try:
         if preflight(rep, a) and spire_entry(rep, a):
@@ -439,16 +522,19 @@ def main():
                 gateway(rep, a)
                 signals(rep, a)
                 a2a(rep, a)
+                decisions_logged(rep, a)
     finally:
         if not a.keep:
             cleanup(a)
+    if not a.brief:
+        rep.print_coverage()
     passed = sum(r["status"] == "pass" for r in rep.rows)
     print(f"\n{passed} passed, {len(rep.failed)} failed, {sum(r['status'] == 'skip' for r in rep.rows)} skipped "
           f"in {time.time() - started:.0f} s", flush=True)
     if a.report:
         with open(a.report, "w") as f:
             json.dump({"agent": a.agent, "job": a.job, "at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
-                       "checks": rep.rows, "agent_result": result}, f, indent=2)
+                       "checks": rep.rows, "objectives": rep.coverage(), "agent_result": result}, f, indent=2)
     sys.exit(1 if rep.failed else 0)
 
 
