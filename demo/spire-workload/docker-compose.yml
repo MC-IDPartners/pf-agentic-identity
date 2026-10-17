@@ -181,24 +181,23 @@ services:
       - ../vars.raidiam.env:/fed/vars.raidiam.env:ro
       - ../keys/raidiam/rs-accounts:/keys:ro
 
-  # The gateway in front of rs-accounts (../gateway/README.md): agentgateway, at the resource's identifier, asks the PEP
-  # about every MCP request; only then does a call reach the resource.
+  # The gateway in front of rs-accounts (../gateway/README.md): Kong, at the resource's identifier, asks coaz-pep about
+  # every MCP request (its HTTP check API); only then does a call reach the resource.
   gateway:
-    build: ../gateway/agentgateway
+    build: ../gateway/kong
     restart: unless-stopped
     ports:
       - "8446:8446"
     environment:
       RESOURCE_ID: ${RAIDIAM_RESOURCE_ID:-https://host.docker.internal:8446}
-      RESOURCE_HOST: rs-accounts:8446
-      EXTAUTHZ_HOST: coaz-pep:9191
+      RESOURCE_URL: http://rs-accounts:8446
+      COAZ_URL: http://coaz-pep:9192
     volumes:
       - ../keys/raidiam/attested-client/entity-host-tls.crt:/tls/tls.crt:ro
       - ../keys/raidiam/attested-client/entity-host-tls.key:/tls/tls.key:ro
-      - ../keys/pf-runtime-tls-ca.crt:/usr/local/share/ca-certificates/pf-runtime-tls-ca.crt:ro
     depends_on: [rs-accounts, coaz-pep]
 
-  # The policy enforcement point (vendored from idp-agentic-demo): Envoy ext_authz for the gateway. It verifies the
+  # The policy enforcement point (vendored from idp-agentic-demo): Kong's plugin asks its HTTP check API. It verifies the
   # access token (PingFederate's JWKS, fetched inside the network), then for an MCP tools/call reads the tool's
   # x-coaz-mapping and asks the PDP an AuthZEN question. Fails closed.
   coaz-pep:

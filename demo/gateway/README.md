@@ -4,12 +4,13 @@ The rig's resource (`spire-workload`'s `rs-accounts`) sits behind a gateway, a p
 PingAuthorize, vendored from `idp-agentic-demo` (commit `0a5f85f`) and adapted:
 
 ```
-agent ──Bearer──▶ gateway (agentgateway, https://host.docker.internal:8446 - the resource's identifier)
+agent ──DPoP──▶ gateway (Kong, https://host.docker.internal:8446 - the resource's identifier)
                      │  /.well-known/*  ──────────────────────────────────────────────▶ rs-accounts (passed through)
-                     │  /mcp/*  ext_authz
+                     │  /mcp*  plugin coaz-pep -> POST /v1/mcp/check
                      ▼
                   coaz-pep ── 1. the token: signature (PingFederate's JWKS), typ at+jwt, iss, aud, exp
-                     │        2. tools/call: the tool's x-coaz-mapping (from tools/list) -> an AuthZEN request
+                     │        2. the DPoP proof from the agent instance's key; Shared Signals revocations
+                     │        3. tools/call: the tool's x-coaz-mapping (from tools/list) -> an AuthZEN request
                      ▼
                   PingAuthorize 11.1 (AuthZEN servlet -> embedded PDP, banking deployment package)
                      │  permit
@@ -19,8 +20,8 @@ agent ──Bearer──▶ gateway (agentgateway, https://host.docker.internal:
 
 | Directory | What | Changed from upstream |
 |---|---|---|
-| `agentgateway/` | solo.io agentgateway v1.3.1, re-plated on debian-slim for its entrypoint | Listens at the resource's identifier with the rig's certificate; routes `/.well-known/*` through and `/mcp` via ext_authz; CA roots added. **Not** its `jwtAuth`: once that verifies a token it removes the `Authorization` header, so neither the PEP nor the resource would see it |
-| `coaz-pep/` | The PEP: Envoy ext_authz gRPC, COAZ (OpenID AuthZEN MCP profile) | `verify.go`: verifies access tokens (RS256/PS256/ES256 against a JWKS, `typ`, `iss`, `aud`, `exp`/`nbf`) - upstream only decoded them. `omit_token_aud` route option |
+| `kong/` | Kong OSS 3.7, DB-less | Listens at the resource's identifier with the rig's certificate; `/.well-known/*` through, `/mcp` via the plugin. The plugin (`coaz-pep`) is new: a thin delegate that sends **every** request to coaz-pep's HTTP check API and applies its verdict. The upstream `authzen-pdp` plugin made its own checks in Lua - tokens decoded but not verified, DPoP without the proof's signature - and delegated only `tools/call`; none of that is kept |
+| `coaz-pep/` | The PEP: an HTTP check API (Kong) and Envoy ext_authz gRPC; COAZ (OpenID AuthZEN MCP profile) | `verify.go`: verifies access tokens (RS256/PS256/ES256 against a JWKS, `typ`, `iss`, `aud`, `exp`/`nbf`) - upstream only decoded them. `dpop.go`, `ssf.go` (below). `omit_token_aud` route option |
 | `pingauthorize/` | PingAuthorize 11.1, the AuthZEN servlet extension, the banking deployment package | Rig-only dev keys for the servlet; no Railway |
 
 The resource declares, per tool, how a call maps to an AuthZEN request (`x-coaz-mapping` in `rs_accounts.py`):
@@ -38,6 +39,10 @@ python harness.py                                                  # 40 checks: 
 PingAuthorize fetches a DevOps evaluation licence on start from `~/.pingidentity/config`
 (`PING_IDENTITY_DEVOPS_USER`/`KEY`), as PingFederate does. It is not published on the host.
 
+Kong replaced agentgateway, which the rig used first: agentgateway's own `jwtAuth` removes the `Authorization` header
+once it has verified a token, so the PEP checked tokens instead, over ext_authz. Kong needs no such workaround - the
+PEP's check API is the same pipeline - and any gateway that can call it can take Kong's place.
+
 Decisions are in coaz-pep's log (`docker compose logs -f coaz-pep`): `COAZ PERMIT tools/call get_balance ...`,
 `COAZ DENY tools/call pay_supplier: Access denied`, `token refused: ...`.
 
@@ -51,8 +56,8 @@ The token is bound to the key the provider attested - the agent instance's own, 
    `cnf.jkt` = the instance key's thumbprint. No PingFederate setting is needed.
 2. Every call carries `Authorization: DPoP <token>` and a fresh proof from the instance key (the agent's MCP client
    signs one per request).
-3. The **gateway** enforces it - not the resource (`coaz-pep/cmd/coaz-pep/dpop.go`, route `require_dpop`,
-   `dpop_htu_base`): the proof's signature under its own `jwk` (public only), that key's thumbprint = `cnf.jkt`,
+3. The **gateway** enforces it - not the resource (`coaz-pep/cmd/coaz-pep/dpop.go`, route settings `require_dpop`,
+   `dpop_htu_base` in `kong/kong.yml.template`): the proof's signature under its own `jwk` (public only), that key's thumbprint = `cnf.jkt`,
    `typ`, `alg`, `htm`, `htu` (the resource's URL as the client addressed it), `ath` = the token's hash, age within
    60 s, `jti` not replayed. A bound token presented as Bearer is refused on any route (RFC 9449 §7.1). The resource
    publishes `dpop_bound_access_tokens_required: true` and takes the token from either scheme.

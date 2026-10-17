@@ -1,0 +1,39 @@
+# Kong, DB-less, in front of the rig's MCP resource (spire-workload's rs-accounts), at its identifier.
+#
+#   /.well-known/*  the resource's Entity Configuration and protected resource metadata, passed through
+#   /mcp*           every request asks coaz-pep first (plugin coaz-pep -> POST /v1/mcp/check): the token's signature
+#                   (PingFederate's JWKS), typ/iss/aud/exp, the DPoP proof from the agent instance's key, Shared Signals
+#                   revocations, and for tools/call the tool's x-coaz-mapping -> an AuthZEN evaluation at
+#                   PingAuthorize. Refused -> coaz-pep's answer verbatim; coaz-pep unreachable -> 503 (fail closed).
+#
+# __PLACEHOLDERS__ are filled in by docker-entrypoint.sh from the environment.
+_format_version: "3.0"
+
+services:
+- name: rs-accounts
+  url: __RESOURCE_URL__
+  routes:
+  - name: federation-documents
+    paths: [/.well-known/]
+    strip_path: false
+  - name: mcp
+    paths: [/mcp]
+    strip_path: false
+    plugins:
+    - name: coaz-pep
+      config:
+        coaz_url: __COAZ_URL__
+        # The PEP's settings for this route (coaz-pep's pepConfig).
+        route_config:
+          pep_label: "PEP (rs-accounts MCP)"
+          style: "mcp"
+          require_token: "true"
+          # Tokens are bound to the agent instance's key (cnf.jkt): every call carries a DPoP proof from it.
+          require_dpop: "true"
+          dpop_htu_base: "__RESOURCE_ID__"
+          # The agent acts as itself (client_credentials): there is no end user behind it.
+          require_user_login: "false"
+          # The PEP has verified the audience; the borrowed banking policy pins another, so it isn't sent.
+          omit_token_aud: "true"
+          # Where the PEP reads tools/list for each tool's x-coaz-mapping.
+          mcp_upstream_url: "__RESOURCE_URL__/mcp/v1"
