@@ -525,6 +525,78 @@ sequenceDiagram
 
 ---
 
+## The agent provider, and a production alternative without it
+
+### Why the rig uses a provider
+
+The rig follows CBA's own agentic pattern (`provider.demo.cba.raidiam.io`, agent-r): agents are hosted by an **agent
+provider**, a federation entity Raidiam vouches for. The provider publishes each agent's Entity Configuration, holds its
+keys, binds its SPIFFE IDs and can attest its instances.
+
+We used it for three reasons:
+- **The rig mirrors the architecture CBA is evaluating.** Third parties hosting agents is part of that architecture.
+- **Raidiam couldn't carry what attestation needs.** When the rig was built, Raidiam's federation-managed entities lacked
+  `authority_hints`, and Raidiam still doesn't publish per-statement metadata such as SPIFFE bindings. The binding of a
+  workload to an agent therefore had to live in an Entity Configuration we control.
+- **The private keys stay with the agents' owner** (TC-26). The provider shows what that owner does: it makes the CSRs
+  and signs with keys the Trust Controller never holds.
+
+### An alternative for production
+
+Most of the provider's jobs can be absorbed by the systems already in the picture:
+- **Raidiam** hosts and signs each agent's Entity Configuration: a federation-managed statement, resolvable by Raidiam
+  itself even when the agent runs in a protected network. Raidiam would also carry the SPIFFE binding on the statement.
+- **A vault (OpenBao or a KMS)** creates the bridge key on demand. Only PingFederate uses it, and only its CSR leaves.
+- **PingFederate** attests instances against the binding Raidiam vouches for, and registers the agent on first use by
+  resolving it through Raidiam.
+- **The marketplace's pipeline** drives the statement, the CSR, the roles and the SPIRE entry.
+
+That removes a component, the provider's keys and hosting, and the pre-made bridge-key slots. Every binding becomes
+governed in one place, the Trust Controller.
+
+It depends on two changes outside the bank's control:
+- **Raidiam** must publish SPIFFE metadata in its statements.
+- **PingFederate's modules** must register an unknown, Raidiam-resolvable client at an attested token request.
+
+Raidiam-hosted Entity Configurations already carry `authority_hints` and resolve through the authority (checked
+2026-10-18). Until those two changes land, the bindings can live in PingFederate's client store, written by the
+marketplace, though that makes them local rather than federation-governed.
+
+```mermaid
+sequenceDiagram
+    participant Op as Operator
+    participant MP as Marketplace
+    participant VT as Vault
+    participant RD as Raidiam
+    participant SP as SPIRE
+    participant AG as Agent
+    participant PF as PingFed
+    Op->>MP: approve Principal Agent 1.0.0
+    MP->>RD: POST softwarestatements, federation-managed, with SPIRE metadata
+    Note over MP,RD: spiffe_id, trust_domain, bundle_url - needs Raidiam to publish them
+    RD->>RD: hosts and signs the agent's Entity Configuration
+    RD-->>MP: statement id, client id on Raidiam's host
+    MP->>VT: create the agent's bridge key
+    VT-->>MP: CSR only
+    MP->>RD: POST certificates rtssigning
+    MP->>RD: POST authorityclaims, the agent's roles
+    MP->>SP: entry spiffe://example.org/principal-1 for the agent's workload
+    AG->>SP: Workload API
+    SP-->>AG: JWT-SVID spiffe://example.org/principal-1
+    AG->>PF: attestation request, SVID and instance key proof
+    PF->>RD: resolve the agent, Entity Configuration and the authority's statement
+    RD-->>PF: binding, keys and capability envelope, all vouched by Raidiam
+    PF->>SP: the trust domain's live JWT-SVID keys
+    PF-->>AG: attestation, cnf the instance key
+    AG->>PF: token, attest_jwt_client_auth with DPoP
+    PF->>PF: unknown client, register it from the resolved chain
+    Note over PF: needs the module to register on first attested use
+    PF->>VT: sign the bridge client assertion
+    PF-->>AG: access token bound to the instance key
+```
+
+---
+
 ## Documentary objectives
 
 These objectives are about decisions, documents or operations, not anything the rig can run:
