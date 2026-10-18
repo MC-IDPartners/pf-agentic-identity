@@ -12,19 +12,22 @@ running something are listed under [Documentary objectives](#documentary-objecti
 
 The parties, as named in the diagrams:
 
-| Name | What it is |
-|---|---|
-| Operator | the person at the marketplace, signed in to Raidiam |
-| Marketplace | the Agent registry and control centre (`marketplace/`) |
-| Raidiam | the Trust Controller: the CBA federation's authority and trust anchor, and its admin API |
-| Provider | the agent provider (`entity-host`, behind Kong on 8443): it hosts the agents' Entity Configurations and holds their keys |
-| SPIRE | SPIRE server and agent: workload registration and attestation |
-| Agent | a Principal agent instance (`agent.py`), e.g. `principal-1` |
-| PingFed | PingFederate with the OpenID Federation modules: the token endpoint, the co-hosted attester, the SSF transmitter |
-| Gateway | Kong with the coaz-pep plugin, in front of every resource and every agent other agents call |
-| PDP | PingAuthorize |
-| Resource | rs-accounts or rs-payments (MCP) |
-| SubAgent | the Accounts or Payments agent (`sub_agent.py`) |
+| Name | What it is | What it does | Why it is necessary |
+|---|---|---|---|
+| Operator | The person running the demo: an agent owner or approver, signed in to Raidiam through the marketplace | Registers, approves, suspends and reinstates agents, and runs scenarios | Agent identities are governed, not self-asserted. Someone accountable decides an agent may exist and act (TC-01, TC-02) |
+| Marketplace | The Agent registry and control centre (`marketplace/`, Node) | Holds the catalogue record (owner, version, evidence, lifecycle). On approval it drives the identity workflow: statement, certificates and roles in Raidiam, the provider slot, the SPIRE entry. It runs scenarios and shows the objectives' evidence | Keeps the business record of an agent separate from its identity (TC-06), and orchestrates the identity workflow from a registry event (TC-01, TC-07) |
+| Raidiam | The Trust Controller: the CBA federation's authority and trust anchor, with its admin API and directory | Holds software statements, certified public keys and roles. It publishes signed subordinate statements with keys and metadata policy (the capability envelope), lists entities, and stops vouching when a statement is suspended | The single authoritative source of who an agent is and what it may do (TC-10). Every party trusts an agent only through a chain to its pinned anchor, never through local configuration |
+| Provider | The agent provider (`entity-host`, behind Kong on 8443), CBA's pattern | Hosts the agents' Entity Configurations and their SPIFFE bindings, holds their entity and bridge keys and makes the CSRs, registers the agents at PingFederate, and can attest instances itself (`/attest`) | Agents need an owner that publishes their federation identity and keeps their keys out of the Trust Controller (TC-05, TC-26). It is the organisation that answers for the agents it hosts |
+| SPIRE | The SPIRE server and agent: the workload identity system (SPIFFE) | Attests running containers by their properties (Docker labels) and issues JWT-SVIDs, e.g. `spiffe://example.org/principal-1`. Its OIDC provider (`spire-oidc`) serves the trust domain's live keys | Ties an agent identity to the workload actually running it, from evidence the workload cannot forge (TC-28). Without it, anything holding a key could claim to be the agent |
+| Agent | A Principal agent instance (`agent.py`), e.g. `principal-1`, in its own container | Gets itself attested, reads its own envelope from Raidiam, finds resources and other agents through the federation, gets DPoP-bound tokens, and calls resources or delegates to sub-agents | The subject of the PoC: an autonomous workload acting on its own identity, or on someone's behalf, under the bank's controls |
+| PingFed | PingFederate with the OpenID Federation modules: the bank's existing authorisation server | Resolves and validates trust chains and registers clients from them. Its co-hosted attester attests instances on SPIRE's evidence. Its token endpoint (`attest_jwt_client_auth` + DPoP, token exchange) issues tokens, and its SSF transmitter emits lifecycle events | Shows that the enterprise authorisation server can join the federation as it is (TC-09, TC-12). It issues every token, so trust decisions are enforced where credentials are minted |
+| Gateway | Kong with the coaz-pep plugin, in front of every resource and every agent other agents call | Verifies the token (signature, audience, expiry), the DPoP proof and replay, and the Shared Signals state. It asks the PDP per call and logs every decision | Puts enforcement in the network path rather than in each resource (TC-03, TC-14, TC-18), and makes lifecycle events take effect in seconds (TC-04) |
+| PDP | PingAuthorize, through its AuthZEN interface; its policy is authored through the PAP API | Decides each call on the action, its arguments and its context, e.g. permits reads, denies payments over 1000 | Separates policy from code: business rules on what an agent may do change without redeploying anything (TC-08) |
+| Resource | rs-accounts and rs-payments: MCP servers inside the protected network, federation entities of their own | Serve the banking tools (balances, payments). They check the token again, and the caller's (and on-behalf-of party's) chain and capability in Raidiam | The protected assets the controls exist for. Their federation identity lets agents find them by capability (TC-10) |
+| SubAgent | The Accounts and Payments agents (`sub_agent.py`): both a client and a resource, hosted by the provider | Accept calls from the Principal, exchange its token (RFC 8693, `sub` the Principal, `act` themselves) and call their resource with a token bound to their own instance | Prove agents calling agents: delegation is explicit and checked at every hop, so no capability passes through an agent that lacks it (TC-27) |
+| Attacker | Anyone holding a stolen token or proof (TC-14's diagram only) | Replays tokens and proofs, or presents them from another key | Shows that sender-constrained tokens are useless to anyone but the attested instance |
+| coaz-pep log | The gateway PEP's decision log (TC-18's diagram only) | Records each permit, deny, refusal and signal with the principal and the reason | The audit trail for trust decisions (TC-18, TC-19) |
+| up.sh | The rig's build and start script (TC-21's diagram only) | Renders keys, bridge slots, the trust store and the environment, and starts PingFederate from its archive | Proves the environment rebuilds from code (TC-21) |
 
 ---
 
