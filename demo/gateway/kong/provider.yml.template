@@ -3,6 +3,8 @@
 # under its own identifier (Raidiam joins its client and resource roles by it), so one origin carries both:
 #
 #   /agent/<name>/mcp*  the agent's MCP, through coaz-pep (token for this agent, DPoP, signals, the PDP)
+#   /cb                the marketplace (control centre): the redirect URI registered on its Raidiam directory client
+#                      is https://localhost:8443/cb, so an operator's sign-in comes back through here
 #   everything else    the provider itself (entity-host): Entity Configurations, protected resource metadata,
 #                      /attest, /agents - passed through
 _format_version: "3.0"
@@ -13,6 +15,13 @@ services:
   routes:
   - name: provider
     paths: [/]
+    strip_path: false
+
+- name: marketplace-sign-in
+  url: __MARKETPLACE_URL__
+  routes:
+  - name: marketplace-sign-in
+    paths: ["~/cb$"]
     strip_path: false
 
 - name: accounts-agent

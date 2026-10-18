@@ -117,8 +117,14 @@ services:
       # and a resource other agents call; keys under ../keys/raidiam/agents/<name>/ (AGENT=<name> attested-client.sh).
       HOSTED_AGENTS: ${RAIDIAM_HOSTED_AGENTS-accounts-agent payments-agent}
       AGENT_CAPABILITIES: accounts-agent=accounts_read,payments-agent=payment_initiation
+      # Principal versions the marketplace deploys (principals.py): slots made in advance, because PingFederate reads
+      # their bridge keys at start-up (up.sh renders them). The admin API, on 8091, is the compose network's only.
+      PRINCIPAL_SLOTS: ${RAIDIAM_PRINCIPAL_SLOTS-principal-1 principal-2 principal-3 principal-4}
+      PRINCIPALS_DIR: /principals
+      PRINCIPAL_ADMIN_PORT: "8091"
     volumes:
       - ../keys/pf-runtime-tls-ca.crt:/certs/pf-runtime-tls-ca.crt:ro
+      - ../keys/raidiam/principals:/principals
       - ../keys/raidiam/attested-client:/keys:ro
       - ../keys/raidiam/provider:/provider:ro
       - ../keys/raidiam/agents:/agents:ro
@@ -360,7 +366,49 @@ services:
     env_file:
       - path: ${PING_DEVOPS_CONFIG:-${HOME}/.pingidentity/config}
 
+  # The control centre: the agent marketplace (../marketplace), the Agent registry. It registers agents in Raidiam -
+  # software statements, certificates, roles - deploys Principal versions at the provider, and drives the scenarios.
+  #   docker compose up -d --build marketplace      then http://localhost:3000
+  # Raidiam's admin API wants an operator's session until it allows directory:management for client credentials:
+  # "Sign in to Raidiam" there. The directory client's redirect URI is https://localhost:8443/cb, which the provider's
+  # gateway (Kong, 8443) passes through to here. Its keys: ../keys/raidiam/directory-client/ (signing.key - the
+  # rtssigning key for private_key_jwt; transport.crt/.key - mutual TLS; ca.pem - the directory's chain).
+  marketplace:
+    build: ../marketplace
+    restart: unless-stopped
+    ports:
+      - "${MARKETPLACE_PORT:-3000}:3000"
+    depends_on:
+      marketplace-mongo:
+        condition: service_healthy
+    environment:
+      MONGO_URL: mongodb://marketplace-mongo:27017
+      MONGO_DB: agent_marketplace
+      DIRECTORY_PARTICIPANTS_URL: ${DIRECTORY_URL:-https://data.directory.cba.raidiam.io}
+      RAIDIAM_MOCK: ${RAIDIAM_MOCK:-}
+      RAIDIAM_GRANT: ${RAIDIAM_GRANT:-authorization_code}
+      RAIDIAM_CLIENT_ID: ${RAIDIAM_DIRECTORY_CLIENT_ID:-https://rp.directory.cba.raidiam.io/openid_relying_party/4a1193a2-a160-40e3-8859-48c1dcb44367}
+      RAIDIAM_SIGNING_KID: ${RAIDIAM_DIRECTORY_SIGNING_KID:-XD-XDHI_6_z_jpSTaIG9xK_kOD6YkiK8wXH8I8Imn7M}
+      RAIDIAM_REDIRECT_URI: https://localhost:8443/cb
+      MARKETPLACE_URL: http://localhost:${MARKETPLACE_PORT:-3000}
+      ENTITY_ID_BASE: ${RAIDIAM_PROVIDER_ID:-https://host.docker.internal:8443}/agent
+    volumes:
+      - ../keys/raidiam/directory-client:/directory-client:ro
+
+  marketplace-mongo:
+    image: mongo:7
+    restart: unless-stopped
+    volumes:
+      - marketplace-data:/data/db
+    healthcheck:
+      test: ["CMD", "mongosh", "--quiet", "--eval", "db.adminCommand('ping')"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 20s
+
 volumes:
+  marketplace-data:
   agent-state:
   accounts-agent-state:
   payments-agent-state:

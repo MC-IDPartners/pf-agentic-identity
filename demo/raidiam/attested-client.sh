@@ -17,9 +17,11 @@ set -euo pipefail
 export MSYS2_ARG_CONV_EXCL="/C=;/CN="
 HERE="$(cd "$(dirname "$0")/.." && pwd)"
 # AGENT=<name> keeps another agent's keys apart, under keys/raidiam/agents/<name>/ (the provider hosts several);
-# unset, the Principal's, under keys/raidiam/attested-client/.
+# PRINCIPAL=<slot> a Principal version slot's, under keys/raidiam/principals/<slot>/ (the marketplace deploys versions
+# into slots; the provider makes their CSRs itself); unset, the Principal's, under keys/raidiam/attested-client/.
 DIR="$HERE/keys/raidiam/${AGENT:+agents/$AGENT}"
 [[ -n "${AGENT:-}" ]] || DIR="$HERE/keys/raidiam/attested-client"
+[[ -z "${PRINCIPAL:-}" ]] || DIR="$HERE/keys/raidiam/principals/$PRINCIPAL"
 mkdir -p "$DIR"; chmod 700 "$DIR"
 
 keys() {
@@ -44,7 +46,7 @@ keys() {
   done
   # The entity host's certificate, from the rig's runtime CA, which PingFederate already trusts (runtime-tls.tf):
   # one for the host, kept with the Principal's keys.
-  if [[ -z "${AGENT:-}" && ! -f "$DIR/entity-host-tls.crt" ]]; then
+  if [[ -z "${AGENT:-}${PRINCIPAL:-}" && ! -f "$DIR/entity-host-tls.crt" ]]; then
     CA="$HERE/keys/pf-runtime-tls-ca"
     [[ -f "$CA.key" ]] || { echo "ERROR: no keys/pf-runtime-tls-ca.key - run ../gen-keys.sh (up.sh does)" >&2; exit 1; }
     ( cd "$DIR" && umask 177

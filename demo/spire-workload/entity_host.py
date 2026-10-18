@@ -114,4 +114,16 @@ def serve(entity_id: str, sign_entity_configuration, others: dict = None, docume
     threading.Thread(target=server.serve_forever, daemon=True).start()
     for path in [*signers, *documents, *actions]:
         print(f"entity host: serving https://{parts.hostname}:{port}{path} (listening on :{port})", flush=True)
+
+    def add(other_id: str, sign):
+        """Serve one more entity from now on (an agent deployed while the host runs)."""
+        path = urlsplit(other_id).path.rstrip("/") + WELL_KNOWN
+        signers[path] = sign
+        print(f"entity host: serving https://{parts.hostname}:{port}{path} (listening on :{port})", flush=True)
+
+    def remove(other_id: str):
+        signers.pop(urlsplit(other_id).path.rstrip("/") + WELL_KNOWN, None)
+        print(f"entity host: no longer serving {other_id}", flush=True)
+
+    server.add, server.remove = add, remove
     return server

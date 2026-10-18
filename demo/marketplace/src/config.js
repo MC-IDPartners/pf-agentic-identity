@@ -21,23 +21,31 @@ const config = {
     cacheMinutes: Number(process.env.DIRECTORY_CACHE_MINUTES || 60),
   },
 
-  // Raidiam Connect admin API. Leave the credentials unset to run in mock mode.
+  // Raidiam Connect admin API. Leave RAIDIAM_CLIENT_ID unset to run in mock mode.
   raidiam: {
     // When true, no outbound calls are made: the lifecycle is simulated and
     // every step is still written to the deployment log.
     mock: bool(process.env.RAIDIAM_MOCK, !process.env.RAIDIAM_CLIENT_ID),
 
+    // authorization_code: an operator signs in (scope directory:website) - until Raidiam allows
+    // directory:management for client_credentials, which needs no sign-in (src/raidiam-auth.js).
+    grant: process.env.RAIDIAM_GRANT || 'authorization_code',
+    issuer: process.env.RAIDIAM_ISSUER || 'https://auth.directory.cba.raidiam.io',
     baseUrl: process.env.RAIDIAM_BASE_URL || 'https://matls-api.directory.cba.raidiam.io',
-    tokenUrl:
-      process.env.RAIDIAM_TOKEN_URL || 'https://matls-auth.directory.cba.raidiam.io/token',
+    // The directory client: its id (Raidiam's openid_relying_party URL), its rtssigning key for private_key_jwt
+    // (and the kid Raidiam publishes for it), and its rtstransport certificate for mutual TLS.
     clientId: process.env.RAIDIAM_CLIENT_ID || '',
-    clientSecret: process.env.RAIDIAM_CLIENT_SECRET || '',
-    scope: process.env.RAIDIAM_SCOPE || 'directory:software',
-
-    // Optional mutual TLS material, as file paths mounted into the container.
-    certPath: process.env.RAIDIAM_CERT_PATH || '',
-    keyPath: process.env.RAIDIAM_KEY_PATH || '',
-    caPath: process.env.RAIDIAM_CA_PATH || '',
+    signingKeyPath: process.env.RAIDIAM_SIGNING_KEY_PATH || '/directory-client/signing.key',
+    signingKid: process.env.RAIDIAM_SIGNING_KID || '',
+    transportCertPath: process.env.RAIDIAM_CERT_PATH || '/directory-client/transport.crt',
+    transportKeyPath: process.env.RAIDIAM_KEY_PATH || '/directory-client/transport.key',
+    caPath: process.env.RAIDIAM_CA_PATH || '/directory-client/ca.pem',
+    // Registered on the directory client exactly as written.
+    redirectUri: process.env.RAIDIAM_REDIRECT_URI || 'https://localhost:8443/cb',
+    loginScope: process.env.RAIDIAM_LOGIN_SCOPE || 'openid directory:website',
+    scope: process.env.RAIDIAM_SCOPE || 'directory:management',
+    // Where the browser lands after signing in: the control centre itself.
+    afterLogin: process.env.MARKETPLACE_URL || 'http://localhost:3000',
 
     // Endpoint templates. Override if your tenant differs.
     paths: {
@@ -50,6 +58,9 @@ const config = {
       authorityClaims:
         process.env.RAIDIAM_PATH_AUTHORITY_CLAIMS ||
         '/organisations/{orgId}/softwarestatements/{ssId}/authorityclaims',
+      certificates:
+        process.env.RAIDIAM_PATH_CERTIFICATES ||
+        '/organisations/{orgId}/softwarestatements/{ssId}/certificates/{type}',
     },
 
     timeoutMs: Number(process.env.RAIDIAM_TIMEOUT_MS || 20000),

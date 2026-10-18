@@ -67,6 +67,7 @@ from client_attestation_sdk.svid_source import SpireWorkloadApiSvidSource
 
 import entity_host
 import federation
+import principals
 
 
 def claims(jwt: str) -> dict:
@@ -395,7 +396,9 @@ def provider_attester(provider_id: str, hosted: list):
         attester_jwk = json.load(f)
     attester_key = jwt.PyJWK(attester_jwk).key
     ttl = int(os.environ.get("PROVIDER_ATTESTATION_TTL", "3600"))
-    bindings = {(entity_id, b["spiffe_id"]): b for entity_id, bs in hosted for b in bs if b["issuer"] == provider_id}
+    def binding_for(client_id, spiffe_id):  # read at each request: agents are deployed while the host runs
+        return next((b for entity_id, bs in hosted for b in bs
+                     if entity_id == client_id and b["spiffe_id"] == spiffe_id and b["issuer"] == provider_id), None)
 
     def spire_keys(binding: dict) -> jwt.PyJWKSet:
         if binding.get("bundle_url"):
@@ -412,7 +415,7 @@ def provider_attester(provider_id: str, hosted: list):
             return 400, {"error": "invalid_request", "error_description": "instance_jwk carries private key material"}
         public = {k: v for k, v in instance_jwk.items() if k in ("kty", "crv", "x", "y", "n", "e", "kid", "alg", "use")}
         spiffe_id = jwt.decode(svid, options={"verify_signature": False}).get("sub")
-        binding = bindings.get((client_id, spiffe_id))
+        binding = binding_for(client_id, spiffe_id)
         if not binding:
             print(f"provider: refused {spiffe_id} for {client_id}: not one of its instances", flush=True)
             return 403, {"error": "instance_not_authorized",
@@ -519,16 +522,24 @@ def run_entity_host() -> None:
 
     principal = agents[0]
     others, documents, actions, provider = {}, {}, {}, None
+    hosted = [(ag["id"], ag["bindings"]) for ag in agents]  # grows as Principal versions are deployed
+    versions = principals.Versions(provider_id, authority, issuer, signer, agents, hosted,
+                                   attester_bindings) if provider_id else None
+    if versions:
+        for ag in versions.load():  # versions deployed before this start
+            others[ag["id"]] = signer(ag)
     for ag in agents[1:]:
         others[ag["id"]] = signer(ag)
         documents[urlsplit(ag["id"]).path + "/.well-known/oauth-protected-resource"] = (lambda r: lambda: r)(ag["resource"])
     if provider_id:
-        provider = provider_entity(provider_id, authority, [(ag["id"], ag["bindings"]) for ag in agents])
+        provider = provider_entity(provider_id, authority, hosted)
         others[provider_id] = provider["sign"]
         documents["/agents"] = provider["agents"]
         if provider["attest"]:
             actions["/attest"] = provider["attest"]
-    entity_host.serve(principal["id"], signer(principal), others, documents, actions)
+    server = entity_host.serve(principal["id"], signer(principal), others, documents, actions)
+    if versions:
+        versions.serve_admin(server)
     every = int(os.environ.get("REGISTER_EVERY", "600"))
     while True:
         failed = False
@@ -538,7 +549,7 @@ def run_entity_host() -> None:
                 provider["vouch"]()
             except Exception as e:
                 print(f"entity host: provider not vouched for yet: {e}", flush=True)
-        for ag in agents:
+        for ag in list(agents):  # a copy: the marketplace deploys versions while this runs
             try:
                 # Sign under the kid Raidiam publishes for the entity key; until Raidiam vouches, nothing registers.
                 ag["public"]["kid"] = federation.vouched_kid(federation.subordinate_statement(authority, ag["id"]),

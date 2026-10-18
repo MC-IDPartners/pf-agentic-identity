@@ -1,9 +1,9 @@
 'use strict';
 
-const fs = require('fs');
 const crypto = require('crypto');
-const https = require('https');
 const config = require('./config');
+const auth = require('./raidiam-auth');
+const { request } = require('./mtls');
 
 /**
  * Client for the Raidiam Connect admin API.
@@ -20,51 +20,6 @@ const config = require('./config');
 const uuid = () => crypto.randomUUID();
 const kid = () => crypto.randomBytes(24).toString('base64url');
 
-function agent() {
-  const { certPath, keyPath, caPath } = config.raidiam;
-  if (!certPath && !keyPath && !caPath) return undefined;
-  const opts = {};
-  if (certPath) opts.cert = fs.readFileSync(certPath);
-  if (keyPath) opts.key = fs.readFileSync(keyPath);
-  if (caPath) opts.ca = fs.readFileSync(caPath);
-  return new https.Agent(opts);
-}
-
-let cachedToken = null;
-
-async function accessToken() {
-  if (cachedToken && cachedToken.expires > Date.now() + 30000) {
-    return cachedToken.value;
-  }
-
-  const body = new URLSearchParams({
-    grant_type: 'client_credentials',
-    client_id: config.raidiam.clientId,
-    client_secret: config.raidiam.clientSecret,
-    scope: config.raidiam.scope,
-  });
-
-  const res = await fetch(config.raidiam.tokenUrl, {
-    method: 'POST',
-    headers: { 'content-type': 'application/x-www-form-urlencoded' },
-    body,
-    dispatcher: undefined,
-    agent: agent(),
-    signal: AbortSignal.timeout(config.raidiam.timeoutMs),
-  });
-
-  if (!res.ok) {
-    throw new Error(`token request failed: ${res.status} ${await res.text()}`);
-  }
-
-  const json = await res.json();
-  cachedToken = {
-    value: json.access_token,
-    expires: Date.now() + (json.expires_in || 300) * 1000,
-  };
-  return cachedToken.value;
-}
-
 function url(template, params) {
   let path = template;
   for (const [k, v] of Object.entries(params)) {
@@ -73,31 +28,24 @@ function url(template, params) {
   return config.raidiam.baseUrl.replace(/\/$/, '') + path;
 }
 
-async function call(method, template, params, body) {
-  const token = await accessToken();
+/**
+ * One admin API call, over mutual TLS with the token from raidiam-auth (an operator's sign-in today, client
+ * credentials later). body: an object (JSON) or a string (sent as is, with contentType).
+ */
+async function call(method, template, params, body, contentType) {
+  const token = await auth.accessToken();
   const target = url(template, params);
-
-  const res = await fetch(target, {
-    method,
+  const raw = typeof body === 'string';
+  const res = await request(method, target, {
     headers: {
       authorization: `Bearer ${token}`,
-      'content-type': 'application/json',
       accept: 'application/json',
+      ...(body === undefined ? {} : { 'content-type': contentType || (raw ? 'text/plain' : 'application/json') }),
     },
-    body: body ? JSON.stringify(body) : undefined,
-    agent: agent(),
-    signal: AbortSignal.timeout(config.raidiam.timeoutMs),
+    body: body === undefined ? undefined : raw ? body : JSON.stringify(body),
   });
-
-  const text = await res.text();
-  let json;
-  try {
-    json = text ? JSON.parse(text) : {};
-  } catch {
-    json = { raw: text };
-  }
-
-  if (!res.ok) {
+  const json = res.json === undefined ? { raw: res.text } : res.json;
+  if (res.status >= 400) {
     const err = new Error(`${method} ${target} → ${res.status}`);
     err.status = res.status;
     err.body = json;
@@ -327,4 +275,4 @@ function describe(err) {
   return String(err.message || err).slice(0, 500);
 }
 
-module.exports = { publish, suspend, reinstate, softwareStatementPayload };
+module.exports = { publish, suspend, reinstate, softwareStatementPayload, call };

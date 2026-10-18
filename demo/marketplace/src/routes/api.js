@@ -4,6 +4,8 @@ const express = require('express');
 const lifecycle = require('../lifecycle');
 const directory = require('../directory');
 const config = require('../config');
+const auth = require('../raidiam-auth');
+const raidiam = require('../raidiam');
 
 const router = express.Router();
 
@@ -14,10 +16,28 @@ router.get(
   wrap(async (req, res) => {
     res.json({
       raidiamMode: config.raidiam.mock ? 'mock' : 'live',
+      auth: config.raidiam.mock ? null : auth.status(),
       baseUrl: config.raidiam.mock ? null : config.raidiam.baseUrl,
       entityIdBase: config.entityIdBase,
       directoryUrl: config.directory.participantsUrl,
     });
+  })
+);
+
+// The directory session: who is signed in to Raidiam, and until when.
+router.get('/auth', (req, res) => res.json(auth.status()));
+router.post('/auth/logout', (req, res) => {
+  auth.signOut();
+  res.json(auth.status());
+});
+
+// Read-only passthrough to Raidiam's admin API with the current session, for checking what the control plane
+// holds (GET /api/raidiam/organisations/CBA-123/softwarestatements/<id>). Writes go through the lifecycle only.
+router.get(
+  /^\/raidiam\/(.+)$/,
+  wrap(async (req, res) => {
+    const query = req.url.includes('?') ? req.url.slice(req.url.indexOf('?')) : '';
+    res.json(await raidiam.call('GET', `/${req.params[0]}${query}`, {}));
   })
 );
 

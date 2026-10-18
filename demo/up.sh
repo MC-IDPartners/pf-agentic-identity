@@ -183,6 +183,12 @@ case "${PF_PROFILE:-}" in
 esac
 if [[ "${PF_PROFILE:-}" == raidiam ]]; then
   # The bridge keys, mounted by docker-compose.raidiam.yml; they name the issuer, so they are rendered for this one.
+  # The Principal version slots the marketplace deploys into (spire-workload/principals.py): their keys, made once.
+  if [[ -n "${RAIDIAM_PROVIDER_ID:-}" ]]; then
+    for slot in ${RAIDIAM_PRINCIPAL_SLOTS-principal-1 principal-2 principal-3 principal-4}; do
+      PRINCIPAL="$slot" "$HERE/raidiam/attested-client.sh" keys >/dev/null
+    done
+  fi
   "$HERE/raidiam/render-runtime-keys.sh" "$PF_BASE_URL"
   # ":" explicitly: docker compose splits COMPOSE_FILE on ";" on Windows by default.
   export COMPOSE_PATH_SEPARATOR=":" COMPOSE_FILE="docker-compose.yml:docker-compose.raidiam.yml"

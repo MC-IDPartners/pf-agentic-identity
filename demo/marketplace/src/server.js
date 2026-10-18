@@ -5,6 +5,7 @@ const express = require('express');
 const config = require('./config');
 const db = require('./db');
 const api = require('./routes/api');
+const auth = require('./raidiam-auth');
 
 async function main() {
   await db.connect();
@@ -13,6 +14,26 @@ async function main() {
   app.use(express.json({ limit: '1mb' }));
 
   app.get('/healthz', (req, res) => res.json({ ok: true }));
+
+  // Signing in to Raidiam (src/raidiam-auth.js). The redirect URI registered on the directory client is
+  // https://localhost:8443/cb: the agent provider's gateway (Kong) on 8443 passes /cb through to here.
+  app.get('/auth/login', async (req, res, next) => {
+    try {
+      res.redirect(await auth.startLogin());
+    } catch (err) {
+      next(err);
+    }
+  });
+  app.get('/cb', async (req, res) => {
+    try {
+      await auth.completeLogin(req.query);
+      res.redirect(`${config.raidiam.afterLogin}/?signedIn=1`);
+    } catch (err) {
+      console.error('[auth]', err.message);
+      res.redirect(`${config.raidiam.afterLogin}/?signInError=${encodeURIComponent(err.message.slice(0, 300))}`);
+    }
+  });
+
   app.use('/api', api);
 
   const pub = path.join(__dirname, '..', 'public');
@@ -28,7 +49,7 @@ async function main() {
   app.use((err, req, res, next) => {
     const status = err.status || 500;
     if (status >= 500) console.error('[error]', err);
-    res.status(status).json({ error: err.message || 'internal error', steps: err.steps });
+    res.status(status).json({ error: err.message || 'internal error', steps: err.steps, body: err.body, signIn: err.signIn });
   });
 
   app.listen(config.port, () => {

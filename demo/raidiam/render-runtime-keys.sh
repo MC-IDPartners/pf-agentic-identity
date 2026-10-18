@@ -15,7 +15,7 @@ for f in attester-signing.public.jwks.json "bridge-$CLIENT.private.jwk.json"; do
 done
 mkdir -p "$KEYS/runtime"; chmod 700 "$KEYS/runtime"
 ( umask 177
-  ISSUER="$ISSUER" CLIENT="$CLIENT" KEYS="$KEYS" ATTESTED="${RAIDIAM_ATTESTED_CLIENT_ID:-}" PROVIDER="${RAIDIAM_PROVIDER_ID:-}" HOSTED="${RAIDIAM_HOSTED_AGENTS:-}" node -e '
+  ISSUER="$ISSUER" CLIENT="$CLIENT" KEYS="$KEYS" ATTESTED="${RAIDIAM_ATTESTED_CLIENT_ID:-}" PROVIDER="${RAIDIAM_PROVIDER_ID:-}" HOSTED="${RAIDIAM_HOSTED_AGENTS:-}" SLOTS="${RAIDIAM_PRINCIPAL_SLOTS-principal-1 principal-2 principal-3 principal-4}" node -e '
     const fs = require("fs"), k = process.env.KEYS, iss = process.env.ISSUER.replace(/\/+$/, "");
     const read = f => JSON.parse(fs.readFileSync(`${k}/${f}`, "utf8"));
     const bridges = { [process.env.CLIENT]: { jwk: read(`bridge-${process.env.CLIENT}.private.jwk.json`), attesters: [iss] } };
@@ -29,6 +29,12 @@ mkdir -p "$KEYS/runtime"; chmod 700 "$KEYS/runtime"
     for (const name of process.env.HOSTED.split(/[\s,]+/).filter(Boolean)) {
       if (!provider) throw new Error("RAIDIAM_HOSTED_AGENTS needs RAIDIAM_PROVIDER_ID");
       bridges[`${provider}/agent/${name}`] = { jwk: read(`agents/${name}/bridge.private.jwk.json`), attesters };
+    }
+    // The Principal version slots (raidiam/attested-client.sh PRINCIPAL=<slot>): <provider>/agent/<slot>, ready for the
+    // marketplace to deploy into while PingFederate runs - it reads this file only at start-up.
+    for (const slot of process.env.SLOTS.split(/[\s,]+/).filter(Boolean)) {
+      if (!provider || !fs.existsSync(`${k}/principals/${slot}/bridge.private.jwk.json`)) continue;
+      bridges[`${provider}/agent/${slot}`] = { jwk: read(`principals/${slot}/bridge.private.jwk.json`), attesters };
     }
     fs.writeFileSync(`${k}/runtime/bridge-signing-keys.json`, JSON.stringify(bridges));
   ' )
