@@ -112,14 +112,14 @@ def discover_resources(resolver, authority: str, anchor: str, local: list, ca) -
     """Raidiam's listing (resolved by Raidiam) and the network's own resources (resolved here)."""
     found = {}
     try:
-        listed = requests.get(f"{authority}/list", params={"entity_type": "oauth_resource"}, timeout=20).json()
+        listed = federation.get(f"{authority}/list", params={"entity_type": "oauth_resource"}, timeout=20).json()
     except Exception as e:
         listed = []
         say("discover", f"the authority could not list its resources: {e}")
     say("discover", f"Raidiam lists {len(listed)} resource(s); {len(local)} more inside this network")
 
     def remote(sub):
-        r = requests.get(f"{authority}/resolve", timeout=20, params={
+        r = federation.get(f"{authority}/resolve", timeout=20, params={
             "sub": sub, "trust_anchor": anchor, "entity_type": "oauth_resource"})
         if not r.ok or r.text.strip().startswith("{"):
             return None
@@ -159,13 +159,26 @@ def dpop_proof(key, htm: str, htu: str, access_token: str = None, nonce: str = N
 ATTESTER = os.environ.get("ATTESTER", "pingfederate").lower()
 
 
+def fetch_svid(spire, audience: str, attempts: int = 3) -> str:
+    """A JWT-SVID from the SPIRE agent, retried: the agent can briefly lose its server (a container restart, a
+    network blip) and answers with a failed fetch until it has it back."""
+    for attempt in range(attempts):
+        try:
+            return spire.fetch(audience)
+        except Exception as e:
+            if attempt == attempts - 1:
+                raise
+            print(f"spire: {e}, retrying in {2 * (attempt + 1)} s", flush=True)
+            time.sleep(2 * (attempt + 1))
+
+
 def attest(client_id: str, key, public: dict, provider: str, issuer: str, ca) -> str:
     """This instance's client attestation, on SPIRE's word: from PingFederate's attester (ATTESTER=pingfederate) or
     the agent provider's (ATTESTER=provider). Raises Refused("attest", ...) when the attester says no."""
     spire = SpireWorkloadApiSvidSource(socket_path=os.environ.get("SPIRE_SOCKET", "/run/spire/sockets/agent.sock"),
                                        spire_agent=os.environ.get("SPIRE_AGENT", "spire-agent"))
     if ATTESTER == "provider":
-        svid = spire.fetch(provider)
+        svid = fetch_svid(spire, provider)
         r = requests.post(f"{provider}/attest", json={"client_id": client_id, "instance_jwk": public, "svid": svid},
                           timeout=20, verify=ca)
         field, who = "wallet_attestation", "the provider"
@@ -178,7 +191,7 @@ def attest(client_id: str, key, public: dict, provider: str, issuer: str, ca) ->
         # The attester binds a piece of evidence to the first instance key it attests (instance_attestation_bound), and
         # SPIRE hands out the same cached JWT-SVID for the same audiences - so a second instance in this container would
         # be refused. A second audience, this instance key's thumbprint, makes the SVID this instance's own.
-        svid = spire.fetch(f"{audience},urn:ietf:params:oauth:jwk-thumbprint:sha-256:{jwk_thumbprint(public)}")
+        svid = fetch_svid(spire, f"{audience},urn:ietf:params:oauth:jwk-thumbprint:sha-256:{jwk_thumbprint(public)}")
         now = int(time.time())
         proof = jwt.encode({"aud": audience, "jti": str(uuid.uuid4()), "iat": now, "exp": now + 60}, key, "ES256",
                            headers={"typ": doc.get("instance_proof_typ", "oauth-attestation-instance-proof+jwt"),

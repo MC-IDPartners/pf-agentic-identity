@@ -20,6 +20,8 @@ import jwt
 import requests
 from jwt import PyJWKSet
 
+import federation
+
 WELL_KNOWN = "/.well-known/openid-federation"
 
 
@@ -61,7 +63,7 @@ class Resolver:
         self.trust_anchor, self.anchor_jwks, self.verify, self.reachable = trust_anchor, anchor_jwks, verify, reachable
 
     def _get(self, url: str) -> str:
-        resp = requests.get(url, timeout=20, verify=self.verify)
+        resp = federation.get(url, timeout=20, verify=self.verify)  # a network or TLS blip is retried, a 404 is not
         resp.raise_for_status()
         return resp.text.strip()
 

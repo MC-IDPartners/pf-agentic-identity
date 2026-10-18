@@ -56,6 +56,33 @@ def pf_verify():
 
 # ── Raidiam directory ──────────────────────────────────────────────────────────────────────────────
 
+RETRY_STATUSES = (429, 502, 503, 504)
+
+
+def get(url: str, attempts: int = 4, **kwargs) -> requests.Response:
+    """A GET for the federation's reads - Raidiam's authority and directory, entities' configurations - retried on a
+    network, TLS or timeout failure and on 429/502/503/504, with backoff (Retry-After when given). Reads only: they
+    are safe to repeat. Any other answer, a 404 included, is returned as it is: it means something."""
+    for attempt in range(attempts):
+        last = attempt == attempts - 1
+        try:
+            resp = requests.get(url, **kwargs)
+        except requests.RequestException as e:
+            if last:
+                raise
+            wait = 2 ** attempt
+            print(f"federation: {type(e).__name__} from {urlsplit(url).netloc}, retrying in {wait} s", flush=True)
+            time.sleep(wait)
+            continue
+        if resp.status_code in RETRY_STATUSES and not last:
+            wait = min(int(resp.headers.get("Retry-After") or 0) or 2 ** attempt, 30)
+            print(f"federation: {resp.status_code} from {urlsplit(url).netloc}, retrying in {wait} s", flush=True)
+            time.sleep(wait)
+            continue
+        return resp
+    return resp
+
+
 def find_authorisation_server(directory_url: str, server_id: str = None, server_name: str = None) -> dict:
     # The participants export is public and rate-limited (429): back off and try again rather than fail - a
     # container that crashes on it restarts straight into the limit again.
@@ -194,7 +221,7 @@ def entity_configuration(entity_id: str, private_key, public_jwk: dict, authorit
 
 
 def _get_statement(url: str) -> str:
-    resp = requests.get(url, timeout=15, headers={"Accept": "application/entity-statement+jwt"})
+    resp = get(url, timeout=15, headers={"Accept": "application/entity-statement+jwt"})
     if resp.status_code != 200:
         raise RuntimeError(f"GET {url} answered {resp.status_code}: {resp.text[:300]}")
     return resp.text.strip()
