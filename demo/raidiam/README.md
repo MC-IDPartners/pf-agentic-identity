@@ -305,10 +305,30 @@ The client's redirect URI is `https://localhost:8443/cb`; the provider's gateway
 marketplace. The session, with its refresh token, is kept in the marketplace's Mongo. When Raidiam allows
 `directory:management` for client credentials: `RAIDIAM_GRANT=client_credentials`, nothing else.
 
-**Slots, not names.** PingFederate reads its bridge keys once, at start-up, so up.sh makes the slots' keys
-(`PRINCIPAL=<slot> raidiam/attested-client.sh keys`) and renders their bridge keys in advance;
-`RAIDIAM_PRINCIPAL_SLOTS` (default `principal-1` .. `principal-4`) names them. OpenBao (`vault` backing) would create
-them on demand.
+**Slots, or OpenBao.** PingFederate reads its bridge-key file once, at start-up. By default up.sh therefore makes the
+slots' keys in advance (`PRINCIPAL=<slot> raidiam/attested-client.sh keys`, `RAIDIAM_PRINCIPAL_SLOTS`, default
+`principal-1` .. `principal-4`), and a deploy takes a free one.
+
+With **OpenBao** (`RAIDIAM_BRIDGE_BACKING=vault`) there is no limit. The bridge keys live in OpenBao's transit engine,
+never exported, and the bridge-key file names them by convention: an entry under `"*"`, `bridge-{client_suffix}` for
+every client under `<provider>/agent/`. A deploy enrols the next `principal-N`. The provider creates `bridge-<name>` in
+OpenBao and has OpenBao make its CSR, and PingFederate finds the key by name with no restart. This needs the module change
+on branch `feature/bridge-keys-openbao` of the module source (`pf-agentic-identity1`; built jars staged in
+`image/modules`, recorded in its `MANIFEST`): the template in `BridgeSigners` and RSA keys in `OpenBaoTransitSigner`.
+
+```sh
+cd spire-workload && docker compose up -d openbao && python3 ../openbao/setup.py   # init, unseal, transit, policies, import
+RAIDIAM_BRIDGE_BACKING=vault ... ./up.sh                                          # PingFederate signs bridge assertions in OpenBao
+RAIDIAM_BRIDGE_BACKING=vault docker compose up -d entity-host                     # the provider enrols agents there
+```
+
+`openbao/setup.py` imports the bridge keys already in use (`bridge-spire-workload`, `bridge-spire-client`,
+`bridge-accounts-agent`, `bridge-payments-agent`, each deployed version's), so Raidiam's certificates stay valid. Its two
+tokens:
+- **PingFederate's** may read and sign with `bridge-*` keys only.
+- **The provider's** may create `bridge-*` keys and their CSRs. It cannot sign with them, export, back up or delete
+  them. OpenBao counts creating a key as an update, so it can change a key's settings (e.g. rotate it), which could
+  disrupt an agent but never impersonate one.
 
 Raidiam's admin API, as found:
 

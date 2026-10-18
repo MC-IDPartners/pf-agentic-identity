@@ -167,7 +167,8 @@ the anchor's Entity Configuration, checked out of band.
 | The marketplace drives Docker through its socket (SPIRE entries, agent runs) | a deployment pipeline with its own, scoped credentials (SPIRE's API, the platform's) |
 | An operator's Raidiam session, kept in an unauthenticated Mongo on the compose network | client credentials (`directory:management`) once Raidiam allows them, secrets in a vault |
 | The SSF emitter's secret mounted into the marketplace (`secrets.env`) | the lifecycle events raised by the agent provider or the Trust Controller as an SSF transmitter |
-| Principal version slots with bridge keys made in advance | bridge keys created on demand in OpenBao (`vault`) |
+| Principal version slots with bridge keys made in advance | bridge keys created on demand in OpenBao (`RAIDIAM_BRIDGE_BACKING=vault`, in the rig now) |
+| OpenBao on plain HTTP, one unseal key and its root token in `keys/openbao/` | TLS, Shamir shares or auto-unseal through a KMS/HSM, no root token at rest |
 
 ## What already works
 

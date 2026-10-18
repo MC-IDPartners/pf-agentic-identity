@@ -1,0 +1,7 @@
+# RAIDIAM_BRIDGE_BACKING=vault (up.sh layers this on the raidiam profile): PingFederate's OpenBao token, for signing
+# bridge assertions with the keys in OpenBao's transit engine (OIDF_BRIDGE_SIGNER_BACKING=vault). The token may read and
+# sign with bridge-* keys only (openbao/setup.py).
+services:
+  pingfederate:
+    volumes:
+      - ./keys/openbao/pf-bridge.token:/opt/pf-raidiam/pf-bridge.token:ro

@@ -192,6 +192,12 @@ if [[ "${PF_PROFILE:-}" == raidiam ]]; then
   "$HERE/raidiam/render-runtime-keys.sh" "$PF_BASE_URL"
   # ":" explicitly: docker compose splits COMPOSE_FILE on ";" on Windows by default.
   export COMPOSE_PATH_SEPARATOR=":" COMPOSE_FILE="docker-compose.yml:docker-compose.raidiam.yml"
+  # RAIDIAM_BRIDGE_BACKING=vault: the bridge keys in OpenBao (openbao/; spire-workload's openbao service, set up by
+  # openbao/setup.py), PingFederate's token mounted from keys/openbao/pf-bridge.token.
+  if [[ "${RAIDIAM_BRIDGE_BACKING:-config}" == vault ]]; then
+    [[ -f "$HERE/keys/openbao/pf-bridge.token" ]] || { echo "ERROR: RAIDIAM_BRIDGE_BACKING=vault but no keys/openbao/pf-bridge.token - run openbao/setup.py" >&2; exit 1; }
+    COMPOSE_FILE="$COMPOSE_FILE:docker-compose.openbao.yml"
+  fi
 fi
 cat "$HERE/vars.env" ${PROFILE_VARS[@]+"${PROFILE_VARS[@]}"} \
   | sed -E "/^(OIDF_SSF_ISSUER|OIDF_FEDERATION_[A-Z_]+)=/ s#https://localhost:9031#$PF_BASE_URL#" \
@@ -202,6 +208,12 @@ public = lambda m: json.dumps(json.load(open(os.path.join(os.environ["KEYS"], m.
 sys.stdout.write(re.sub(r"\{\{PUBLIC_JWKS:([a-z0-9-]+)\}\}", public, text))' > "$CTX/vars.env"
 sed -n 's/^TF_VAR_ssf_introspection_client_secret=/OIDF_SSF_INTROSPECTION_CLIENT_SECRET=/p' "$HERE/secrets.env" >> "$CTX/vars.env"
 if [[ "${PF_PROFILE:-}" == raidiam ]]; then
+  if [[ "${RAIDIAM_BRIDGE_BACKING:-config}" == vault ]]; then
+    { echo "OIDF_BRIDGE_SIGNER_BACKING=vault"
+      echo "OIDF_BRIDGE_VAULT_ADDR=${OPENBAO_ADDR:-http://host.docker.internal:8200}"
+      echo "OIDF_BRIDGE_VAULT_TOKEN_FILE=/opt/pf-raidiam/pf-bridge.token"
+    } >> "$CTX/vars.env"
+  fi
   # PingFederate's own attester, trusted through the federation like anyone else's: it signs with its own key
   # (attester-signing), which PingFederate's Entity Configuration publishes as oauth_client_attester.jwks - so its
   # token endpoint, or any other authorisation server in the federation, verifies its attestations by resolving

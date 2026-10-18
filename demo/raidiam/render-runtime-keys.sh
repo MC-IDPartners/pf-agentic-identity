@@ -15,7 +15,7 @@ for f in attester-signing.public.jwks.json "bridge-$CLIENT.private.jwk.json"; do
 done
 mkdir -p "$KEYS/runtime"; chmod 700 "$KEYS/runtime"
 ( umask 177
-  ISSUER="$ISSUER" CLIENT="$CLIENT" KEYS="$KEYS" ATTESTED="${RAIDIAM_ATTESTED_CLIENT_ID:-}" PROVIDER="${RAIDIAM_PROVIDER_ID:-}" HOSTED="${RAIDIAM_HOSTED_AGENTS:-}" SLOTS="${RAIDIAM_PRINCIPAL_SLOTS-principal-1 principal-2 principal-3 principal-4}" node -e '
+  ISSUER="$ISSUER" CLIENT="$CLIENT" KEYS="$KEYS" ATTESTED="${RAIDIAM_ATTESTED_CLIENT_ID:-}" PROVIDER="${RAIDIAM_PROVIDER_ID:-}" HOSTED="${RAIDIAM_HOSTED_AGENTS:-}" BACKING="${RAIDIAM_BRIDGE_BACKING:-config}" SLOTS="${RAIDIAM_PRINCIPAL_SLOTS-principal-1 principal-2 principal-3 principal-4}" node -e '
     const fs = require("fs"), k = process.env.KEYS, iss = process.env.ISSUER.replace(/\/+$/, "");
     const read = f => JSON.parse(fs.readFileSync(`${k}/${f}`, "utf8"));
     const bridges = { [process.env.CLIENT]: { jwk: read(`bridge-${process.env.CLIENT}.private.jwk.json`), attesters: [iss] } };
@@ -36,7 +36,22 @@ mkdir -p "$KEYS/runtime"; chmod 700 "$KEYS/runtime"
       if (!provider || !fs.existsSync(`${k}/principals/${slot}/bridge.private.jwk.json`)) continue;
       bridges[`${provider}/agent/${slot}`] = { jwk: read(`principals/${slot}/bridge.private.jwk.json`), attesters };
     }
-    fs.writeFileSync(`${k}/runtime/bridge-signing-keys.json`, JSON.stringify(bridges));
+    // RAIDIAM_BRIDGE_BACKING=vault (../openbao): the same clients, each naming its bridge key in OpenBao instead of
+    // carrying it, and a template for the agents of the provider - an agent enrolled while PingFederate runs (its key
+    // bridge-<name> created in the vault by the provider) needs no entry, no slot and no restart.
+    if (process.env.BACKING === "vault") {
+      const vault = {};
+      for (const [client, entry] of Object.entries(bridges)) {
+        if (provider && client.startsWith(`${provider}/agent/`)) continue; // the template serves these
+        vault[client] = { key_ref: `bridge-${client}`, attesters: entry.attesters };
+      }
+      if (provider) {
+        vault["*"] = { key_ref: "bridge-{client_suffix}", client_id_prefix: `${provider}/agent/`, attesters };
+      }
+      fs.writeFileSync(`${k}/runtime/bridge-signing-keys.json`, JSON.stringify(vault));
+    } else {
+      fs.writeFileSync(`${k}/runtime/bridge-signing-keys.json`, JSON.stringify(bridges));
+    }
   ' )
 #   truststore.p12             the JDK's CAs plus the rig's runtime CA, as PingFederate's JVM default trust store
 #                              (JAVA_OPTS in docker-compose.raidiam.yml). The modules' federation and remote-JWKS fetches

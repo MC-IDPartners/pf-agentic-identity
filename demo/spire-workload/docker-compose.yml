@@ -122,7 +122,13 @@ services:
       PRINCIPAL_SLOTS: ${RAIDIAM_PRINCIPAL_SLOTS-principal-1 principal-2 principal-3 principal-4}
       PRINCIPALS_DIR: /principals
       PRINCIPAL_ADMIN_PORT: "8091"
+      # RAIDIAM_BRIDGE_BACKING=vault: the versions' bridge keys in OpenBao, no slots (principals.py); the provider's
+      # token may create bridge-* keys and their CSRs, never sign with them (../openbao/setup.py).
+      BRIDGE_BACKING: ${RAIDIAM_BRIDGE_BACKING:-config}
+      OPENBAO_ADDR: http://openbao:8200
+      OPENBAO_TOKEN_FILE: /openbao/provider.token
     volumes:
+      - ../keys/openbao/provider:/openbao:ro
       - ../keys/pf-runtime-tls-ca.crt:/certs/pf-runtime-tls-ca.crt:ro
       - ../keys/raidiam/principals:/principals
       - ../keys/raidiam/attested-client:/keys:ro
@@ -435,7 +441,24 @@ services:
       retries: 10
       start_period: 20s
 
+  # OpenBao (../openbao): the bridge keys in its transit engine, never exported - PingFederate signs each attested
+  # client's bridge assertion there (OIDF_BRIDGE_SIGNER_BACKING=vault, RAIDIAM_BRIDGE_BACKING=vault on up.sh) and the
+  # provider enrols new agents there, so Principal versions need no slots. Optional: without it the rig keeps its
+  # bridge keys in a file, as before. Set up with python3 ../openbao/setup.py.
+  #   docker compose up -d openbao && python3 ../openbao/setup.py
+  openbao:
+    image: openbao/openbao:2.4.1
+    restart: unless-stopped
+    command: ["server", "-config=/openbao/config/config.hcl"]
+    ports:
+      - "8200:8200"
+    cap_add: [IPC_LOCK]
+    volumes:
+      - ../openbao/config.hcl:/openbao/config/config.hcl:ro
+      - openbao-data:/openbao/file
+
 volumes:
+  openbao-data:
   marketplace-data:
   agent-state:
   accounts-agent-state:

@@ -1,11 +1,20 @@
 """Principal versions the provider hosts on the marketplace's word - each a Raidiam software statement of its own, at
 <provider>/agent/<slot>, deployed while the provider runs (../marketplace, the control centre).
 
-PingFederate reads its bridge keys once, at start-up (OIDF_BRIDGE_SIGNING_KEYS), so the versions use slots made in
-advance: PRINCIPAL_SLOTS (principal-1 .. principal-4), each with an entity key and a bridge key under
-PRINCIPALS_DIR/<slot>/ (PRINCIPAL=<slot> ../raidiam/attested-client.sh keys; up.sh makes them and renders the bridge
-keys for PingFederate). A deploy claims a free slot. The private keys never leave the provider: the marketplace gets
-CSRs, for the statement it created, and uploads those.
+Two ways to hold the versions' bridge keys (BRIDGE_BACKING):
+
+  config (default)  PingFederate reads its bridge keys once, at start-up (OIDF_BRIDGE_SIGNING_KEYS), so the versions use
+                    slots made in advance: PRINCIPAL_SLOTS (principal-1 .. principal-4), each with an entity key and a
+                    bridge key under PRINCIPALS_DIR/<slot>/ (PRINCIPAL=<slot> ../raidiam/attested-client.sh keys; up.sh
+                    makes them and renders the bridge keys for PingFederate).
+  vault             The bridge keys live in OpenBao (OPENBAO_ADDR, OPENBAO_TOKEN_FILE: the provider's token, which may
+                    create bridge-* keys and get their CSRs, never sign with them - ../openbao/setup.py). PingFederate
+                    finds each version's key by name (the bridge template, bridge-<name>), so there is no limit: a deploy
+                    takes a free version or enrols the next principal-N, creates bridge-<name> in the vault, and has the
+                    vault make its CSR. The private half of a bridge key exists only in the vault.
+
+A deploy claims a version. The entity key's private half never leaves the provider: the marketplace gets CSRs, for the
+statement it created, and uploads those.
 
 The admin API is plain HTTP on PRINCIPAL_ADMIN_PORT (8091), inside the compose network only - the provider's gateway
 (Kong, 8443) does not route to it:
@@ -19,6 +28,8 @@ The admin API is plain HTTP on PRINCIPAL_ADMIN_PORT (8091), inside the compose n
   POST /admin/versions/<slot>/withdraw     stop publishing it (its Entity Configuration is gone; chains break)
   POST /admin/versions/<slot>/release      free the slot (its Raidiam statement is the marketplace's to retire)
 """
+import base64
+import hashlib
 import json
 import os
 import threading
@@ -27,7 +38,10 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 from cryptography import x509
 from cryptography.hazmat.primitives import hashes, serialization
+from cryptography.hazmat.primitives.asymmetric import rsa
 from cryptography.x509.oid import NameOID
+
+import requests
 
 import federation
 
@@ -38,11 +52,60 @@ class Versions:
         self.provider, self.authority, self.issuer = provider_id.rstrip("/"), authority, issuer
         self.signer, self.agents, self.hosted, self.bindings = signer, agents, hosted, bindings
         self.root = os.environ.get("PRINCIPALS_DIR", "/principals")
-        self.slots = os.environ.get("PRINCIPAL_SLOTS", "principal-1 principal-2 principal-3 principal-4").replace(",", " ").split()
+        self.configured_slots = os.environ.get("PRINCIPAL_SLOTS", "principal-1 principal-2 principal-3 principal-4").replace(",", " ").split()
+        self.vault = os.environ.get("BRIDGE_BACKING", "config") == "vault"
+        self.vault_addr = os.environ.get("OPENBAO_ADDR", "http://openbao:8200").rstrip("/")
+        self.vault_token_file = os.environ.get("OPENBAO_TOKEN_FILE", "/openbao/provider.token")
         self.trust_domain = os.environ.get("TRUST_DOMAIN", "example.org")
         self.server = None
         self.lock = threading.Lock()
         self.wake = threading.Event()  # the entity host's registration loop: register a newly hosted version now
+
+    @property
+    def slots(self) -> list:
+        """The versions there are: the configured slots, or - with the bridge keys in the vault - every version enrolled."""
+        if not self.vault:
+            return self.configured_slots
+        found = [d for d in os.listdir(self.root) if os.path.isdir(self._dir(d))] if os.path.isdir(self.root) else []
+        return sorted(found, key=lambda n: (len(n), n))
+
+    # ── the vault (BRIDGE_BACKING=vault) ─────────────────────────────────────────────────────────────────────────
+
+    def _bao(self, method, path, body=None, ok=(200, 204)):
+        with open(self.vault_token_file) as f:
+            token = f.read().strip()
+        r = requests.request(method, self.vault_addr + path, json=body, timeout=15, headers={"X-Vault-Token": token})
+        if r.status_code not in ok:
+            raise RuntimeError(f"OpenBao {method} {path}: {r.status_code} {r.text[:200]}")
+        return r.status_code, (r.json() if r.text else {})
+
+    def _bridge_name(self, slot):
+        return f"bridge-{slot}"
+
+    def _vault_bridge_key(self, slot, create=False):
+        """The version's bridge key in the vault - its public half as an RSA public key - created when asked."""
+        status, body = self._bao("GET", f"/v1/transit/keys/{self._bridge_name(slot)}", ok=(200, 404))
+        if status == 404:
+            if not create:
+                return None
+            self._bao("POST", f"/v1/transit/keys/{self._bridge_name(slot)}", {"type": "rsa-2048", "exportable": False})
+            print(f"entity host: created {self._bridge_name(slot)} in OpenBao (rsa-2048, not exportable)", flush=True)
+            status, body = self._bao("GET", f"/v1/transit/keys/{self._bridge_name(slot)}")
+        latest = body["data"]["keys"][str(body["data"]["latest_version"])]
+        return serialization.load_pem_public_key(latest["public_key"].encode())
+
+    def _bridge_public_jwks(self, slot) -> dict:
+        if not self.vault:
+            with open(os.path.join(self._dir(slot), "bridge.public.jwks.json")) as f:
+                return json.load(f)
+        pub = self._vault_bridge_key(slot)
+        if pub is None:
+            raise RuntimeError(f"no {self._bridge_name(slot)} in OpenBao")
+        n = pub.public_numbers()
+        b64 = lambda i: base64.urlsafe_b64encode(i.to_bytes((i.bit_length() + 7) // 8, "big")).rstrip(b"=").decode()
+        jwk = {"kty": "RSA", "n": b64(n.n), "e": b64(n.e)}
+        thumb = hashlib.sha256(json.dumps({"e": jwk["e"], "kty": "RSA", "n": jwk["n"]}, separators=(",", ":")).encode()).digest()
+        return {"keys": [{**jwk, "kid": base64.urlsafe_b64encode(thumb).rstrip(b"=").decode(), "use": "sig", "alg": "PS256"}]}
 
     # ── state ────────────────────────────────────────────────────────────────────────────────────────────────────
 
@@ -72,6 +135,8 @@ class Versions:
 
     def _ready(self, slot) -> bool:
         d = self._dir(slot)
+        if self.vault:  # the bridge key is created in the vault at the deploy
+            return os.path.exists(os.path.join(d, "entity.private.jwk.json"))
         return all(os.path.exists(os.path.join(d, f)) for f in
                    ("entity.private.jwk.json", "entity.key.pem", "bridge.public.jwks.json", "bridge.key.pem"))
 
@@ -85,8 +150,7 @@ class Versions:
     def _agent(self, slot) -> dict:
         state = self._state(slot)
         private, public = federation.load_or_create_key(os.path.join(self._dir(slot), "entity.private.jwk.json"))
-        with open(os.path.join(self._dir(slot), "bridge.public.jwks.json")) as f:
-            client_jwks = json.load(f)
+        client_jwks = self._bridge_public_jwks(slot)
         agent_id = self.entity_id(slot)
         return {"id": agent_id, "private": private, "public": public, "client_jwks": client_jwks,
                 "name": state.get("name") or f"Principal Agent ({slot})",
@@ -123,6 +187,12 @@ class Versions:
     def claim(self, request: dict):
         with self.lock:
             free = next((s for s in self.slots if self._ready(s) and not self._state(s)), None)
+            if not free and self.vault:  # no limit: enrol the next version, its entity key made here and now
+                taken = {int(n.split("-")[-1]) for n in self.slots if n.startswith("principal-") and n.split("-")[-1].isdigit()}
+                free = f"principal-{max(taken | {0}) + 1}"
+                os.makedirs(self._dir(free), exist_ok=True)
+                federation.load_or_create_key(os.path.join(self._dir(free), "entity.private.jwk.json"))
+                print(f"entity host: enrolled {free} (entity key made here; its bridge key is made in OpenBao at the deploy)", flush=True)
             if not free:
                 return 409, {"error": "no_free_slot", "error_description":
                              f"every Principal slot is in use ({', '.join(self.slots)}): release one, or add slots "
@@ -142,11 +212,23 @@ class Versions:
             x509.NameAttribute(NameOID.ORGANIZATIONAL_UNIT_NAME, org),
             x509.NameAttribute(NameOID.COMMON_NAME, ssid)])
         out = {}
-        for name in ("entity", "bridge"):
-            with open(os.path.join(self._dir(slot), f"{name}.key.pem"), "rb") as f:
-                key = serialization.load_pem_private_key(f.read(), password=None)
-            out[name] = (x509.CertificateSigningRequestBuilder().subject_name(subject).sign(key, hashes.SHA256())
+        entity, _ = federation.load_or_create_key(os.path.join(self._dir(slot), "entity.private.jwk.json"))
+        out["entity"] = (x509.CertificateSigningRequestBuilder().subject_name(subject).sign(entity, hashes.SHA256())
                          .public_bytes(serialization.Encoding.PEM).decode())
+        if self.vault:
+            # The vault makes the bridge key's CSR and signs it with the key it holds: the subject comes from a template
+            # signed by a throwaway key, which the vault replaces with its own.
+            self._vault_bridge_key(slot, create=True)
+            template = (x509.CertificateSigningRequestBuilder().subject_name(subject)
+                        .sign(rsa.generate_private_key(public_exponent=65537, key_size=2048), hashes.SHA256())
+                        .public_bytes(serialization.Encoding.PEM).decode())
+            _, made = self._bao("POST", f"/v1/transit/keys/{self._bridge_name(slot)}/csr", {"csr": template})
+            out["bridge"] = made["data"]["csr"]
+        else:
+            with open(os.path.join(self._dir(slot), "bridge.key.pem"), "rb") as f:
+                key = serialization.load_pem_private_key(f.read(), password=None)
+            out["bridge"] = (x509.CertificateSigningRequestBuilder().subject_name(subject).sign(key, hashes.SHA256())
+                             .public_bytes(serialization.Encoding.PEM).decode())
         state = self._state(slot)
         self._save(slot, {**state, "softwareStatementId": ssid, "organisationId": org})
         print(f"entity host: CSRs for {slot} (statement {ssid}): entity and bridge keys, the private halves kept here", flush=True)
@@ -172,10 +254,8 @@ class Versions:
             about = federation.subordinate_statement(self.authority, self.entity_id(slot))
             keys = federation._claims(about).get("jwks", {}).get("keys", [])
             mine = {}
-            for name in ("entity", "bridge"):
-                with open(os.path.join(self._dir(slot), f"{name}.private.jwk.json")) as f:
-                    n = json.load(f)["n"]
-                mine[name] = next((k.get("kid") for k in keys if k.get("n") == n), None)
+            for name, key in self.keys(slot)[1].items():
+                mine[name] = next((k.get("kid") for k in keys if k.get("n") == key["n"]), None)
             out["raidiam"] = {"vouches": bool(mine["entity"]), "kids": mine}
         except Exception as e:
             out["raidiam"] = {"vouches": False, "error": str(e)[:200]}
@@ -183,11 +263,14 @@ class Versions:
 
     def keys(self, slot):
         """The public halves of the slot's entity and bridge keys - to find their certificates in Raidiam."""
-        out = {}
-        for name in ("entity", "bridge"):
-            with open(os.path.join(self._dir(slot), f"{name}.private.jwk.json")) as f:
-                jwk = json.load(f)
-            out[name] = {k: jwk[k] for k in ("kty", "n", "e")}
+        with open(os.path.join(self._dir(slot), "entity.private.jwk.json")) as f:
+            jwk = json.load(f)
+        out = {"entity": {k: jwk[k] for k in ("kty", "n", "e")}}
+        try:
+            bridge = self._bridge_public_jwks(slot)["keys"][0]
+            out["bridge"] = {k: bridge[k] for k in ("kty", "n", "e")}
+        except (OSError, RuntimeError):
+            out["bridge"] = {"kty": "RSA", "n": None, "e": None}  # not made yet
         return 200, out
 
     def withdraw(self, slot):
