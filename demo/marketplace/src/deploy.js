@@ -116,7 +116,7 @@ async function publish(doc, save) {
       const csrs = await rig.provider('POST', `/admin/versions/${d.slot}/csr`,
         { softwareStatementId: d.softwareStatementId, organisationId: org });
       d.csrs = csrs;
-      add('certificate', `the provider made CSRs for its entity key and its bridge key (CN=${d.softwareStatementId}); the private keys stay with it`);
+      add('certificate', `the provider made CSRs for its entity key and its bridge key (CN=${d.softwareStatementId}); no private key leaves the provider - or, for a bridge key held in OpenBao, the vault`);
       for (const name of ['entity', 'bridge']) {
         if (d.certificates[name]) continue;
         try {
