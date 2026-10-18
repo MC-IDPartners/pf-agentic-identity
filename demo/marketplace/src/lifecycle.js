@@ -2,6 +2,7 @@
 
 const { agents } = require('./db');
 const raidiam = require('./raidiam');
+const deploy = require('./deploy');
 const config = require('./config');
 
 const STATES = ['pending', 'approved', 'suspended'];
@@ -43,6 +44,10 @@ async function create(input, actor) {
   const softwareId = await mintSoftwareId(input.name);
   const doc = {
     softwareId,
+    // 'principal': a Principal agent version the marketplace deploys for real - its statement, certificates and
+    // roles in Raidiam, hosted by the agent provider, a SPIRE entry (src/deploy.js). 'catalogue': the original
+    // registration only.
+    kind: input.kind === 'principal' ? 'principal' : 'catalogue',
     name: input.name,
     description: input.description || '',
     version: input.version || '1.0.0',
@@ -94,14 +99,18 @@ async function transition(softwareId, next, actor) {
   let result;
   let note;
 
+  const principal = doc.kind === 'principal';
+  const save = (partial) =>
+    agents().updateOne({ softwareId }, { $set: { deploy: partial.deploy, updatedAt: new Date().toISOString() } });
+
   if (next === 'approved' && doc.status === 'pending') {
-    result = await raidiam.publish(doc);
+    result = principal ? await deploy.publish(doc, save) : await raidiam.publish(doc);
     note = result.ok ? 'approved and published to Raidiam Connect' : 'approval failed at the control plane';
   } else if (next === 'suspended') {
-    result = await raidiam.suspend(doc);
+    result = principal ? await deploy.suspend(doc) : await raidiam.suspend(doc);
     note = result.ok ? 'suspended, status updated in Raidiam Connect' : 'suspension failed at the control plane';
   } else if (next === 'approved' && doc.status === 'suspended') {
-    result = await raidiam.reinstate(doc);
+    result = principal ? await deploy.reinstate(doc) : await raidiam.reinstate(doc);
     note = result.ok ? 'reinstated, status updated in Raidiam Connect' : 'reinstatement failed at the control plane';
   }
 
@@ -129,7 +138,22 @@ async function transition(softwareId, next, actor) {
     updatedAt: new Date().toISOString(),
   };
 
-  if (next === 'approved' && doc.status === 'pending') {
+  if (next === 'approved' && doc.status === 'pending' && principal) {
+    const d = result.deploy;
+    set.raidiam = {
+      entityId: d.entityId,
+      softwareStatementId: d.softwareStatementId,
+      slot: d.slot,
+      spiffeId: d.spiffeId,
+      signingKid: d.certificates?.entity?.kid || null,
+      bridgeKid: d.certificates?.bridge?.kid || null,
+      rolesGranted: d.rolesActive || Object.keys(d.roles || {}),
+      payload: d.payload,
+      mode: 'live',
+      publishedAt: new Date().toISOString(),
+      statementStatus: 'Active',
+    };
+  } else if (next === 'approved' && doc.status === 'pending') {
     set.raidiam = {
       entityId: result.entityId,
       softwareStatementId: result.softwareStatementId,

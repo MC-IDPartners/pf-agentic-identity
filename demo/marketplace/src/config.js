@@ -66,6 +66,24 @@ const config = {
     timeoutMs: Number(process.env.RAIDIAM_TIMEOUT_MS || 20000),
   },
 
+  // The rig around the marketplace (src/rig.js): the provider's admin API, SPIRE, the agent image, PingFederate.
+  rig: {
+    providerAdmin: process.env.PROVIDER_ADMIN_URL || 'http://entity-host:8091',
+    authorisationServerId: process.env.AUTHORISATION_SERVER_ID || '9b0983ce-781e-4f58-8620-0a752aafa054',
+    spireServer: process.env.SPIRE_SERVER_CONTAINER || 'spire-spire-server-1',
+    spireParent: process.env.SPIRE_PARENT_ID || 'spiffe://example.org/spire/agent/x509pop/agent1',
+    spireBundleUrl: process.env.SPIRE_BUNDLE_URL || 'https://host.docker.internal:8445/keys',
+    agentImage: process.env.AGENT_IMAGE || 'spire-workload-agent:latest',
+    network: process.env.RIG_NETWORK || 'spire-workload_default',
+    spireSocketsVolume: process.env.SPIRE_SOCKETS_VOLUME || 'spire_spire-agent-sockets',
+    statePrefix: process.env.STATE_VOLUME_PREFIX || 'marketplace-',
+    certsDir: process.env.RIG_CERTS_DIR || '/rig/certs',
+    fedDir: process.env.RIG_FED_DIR || '/rig/fed',
+    secretsFile: process.env.RIG_SECRETS_FILE || '/rig/secrets.env',
+    pfUrl: process.env.PF_URL || 'https://host.docker.internal:9031',
+    pfIssuer: process.env.PF_ISSUER || 'https://bottle-platonic-parted.ngrok-free.dev',
+  },
+
   // Base used to mint entity ids for agents, mirroring the demo marketplace.
   entityIdBase:
     process.env.ENTITY_ID_BASE || 'https://marketplace.demo.cba.raidiam.io/agents',

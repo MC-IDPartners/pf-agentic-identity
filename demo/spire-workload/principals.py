@@ -161,7 +161,10 @@ class Versions:
 
     def status(self, slot):
         out = self.describe(slot)
-        out["hosted"] = any(a["id"] == self.entity_id(slot) for a in self.agents)
+        ag = next((a for a in self.agents if a["id"] == self.entity_id(slot)), None)
+        out["hosted"] = bool(ag)
+        out["pingfederate"] = {"registered_until": (ag or {}).get("registered_until"),
+                               "error": (ag or {}).get("registration_error")}
         try:
             about = federation.subordinate_statement(self.authority, self.entity_id(slot))
             keys = federation._claims(about).get("jwks", {}).get("keys", [])

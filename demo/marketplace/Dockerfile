@@ -1,5 +1,8 @@
 FROM node:20-alpine
 
+# The control centre drives the rig through the Docker socket: SPIRE entries, agent runs.
+RUN apk add --no-cache docker-cli
+
 WORKDIR /app
 
 # Install dependencies first so the layer caches between code changes.

@@ -1,2 +1,3 @@
 # The workload's federation entity key (and any CSR made from it): yours, never in git.
 keys/
+reports/

@@ -39,6 +39,10 @@ function when(iso) {
 
 /** Marks the current page in the masthead and shows the control-plane mode. */
 async function chrome() {
+  const nav = document.querySelector('.masthead nav');
+  if (nav && !nav.querySelector('a[href="/objectives"]')) {
+    nav.insertAdjacentHTML('beforeend', '<a href="/objectives">Objectives</a>');
+  }
   const here = location.pathname;
   document.querySelectorAll('.masthead nav a').forEach((a) => {
     const href = a.getAttribute('href');
@@ -51,8 +55,16 @@ async function chrome() {
   try {
     const cfg = await api.get('/config');
     if (cfg.raidiamMode === 'live') {
-      plane.textContent = 'Live control plane';
+      const a = cfg.auth || {};
       plane.classList.add('is-live');
+      plane.innerHTML = a.signedIn
+        ? `Live control plane<br><span class="session">Raidiam: ${esc(a.who || 'signed in')} · <a href="#" id="signout">sign out</a></span>`
+        : `Live control plane<br><a class="session signin" href="/auth/login">Sign in to Raidiam</a>`;
+      const out = document.getElementById('signout');
+      if (out) out.addEventListener('click', async (e) => { e.preventDefault(); await api.post('/auth/logout'); location.reload(); });
+      const q = new URLSearchParams(location.search);
+      if (q.get('signInError')) notice(document.getElementById('notice'), `Raidiam sign-in failed: ${q.get('signInError')}`);
+      if (q.get('signedIn')) notice(document.getElementById('notice'), `Signed in to Raidiam as ${a.who || 'you'}.`, 'ok');
     } else {
       plane.textContent = 'Control plane · mock';
     }

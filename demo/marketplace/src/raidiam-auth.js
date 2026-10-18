@@ -16,7 +16,8 @@ const { request, form } = require('./mtls');
  *                               scope for client credentials. Nothing else changes: RAIDIAM_GRANT switches it.
  *
  * Either way the client authenticates with private_key_jwt (its rtssigning key) over mutual TLS (its rtstransport
- * certificate). Tokens are held in memory only; a restart means signing in again.
+ * certificate). The session is kept in the marketplace's Mongo (cache, key raidiam-session), so a restart keeps it
+ * until its refresh token runs out; Mongo is reachable only on the compose network.
  */
 
 const ASSERTION = 'urn:ietf:params:oauth:client-assertion-type:jwt-bearer';
@@ -163,6 +164,34 @@ async function completeLogin(query) {
   return status();
 }
 
+const SESSION_KEY = 'raidiam-session';
+
+function persist() {
+  try {
+    const { cache } = require('./db');
+    const op = tokens
+      ? cache().updateOne({ key: SESSION_KEY }, { $set: { key: SESSION_KEY, value: tokens } }, { upsert: true })
+      : cache().deleteOne({ key: SESSION_KEY });
+    op.catch((err) => console.error('[auth] could not keep the session:', err.message));
+  } catch (err) {
+    console.error('[auth] could not keep the session:', err.message);
+  }
+}
+
+/** The session kept before a restart, if any. */
+async function restore() {
+  try {
+    const { cache } = require('./db');
+    const doc = await cache().findOne({ key: SESSION_KEY });
+    if (doc?.value?.grant === config.raidiam.grant) {
+      tokens = doc.value;
+      console.log(`[auth] restored the Raidiam session (${tokens.idClaims?.email || tokens.grant})`);
+    }
+  } catch (err) {
+    console.error('[auth] no session restored:', err.message);
+  }
+}
+
 function keep(body, grant, idClaims) {
   tokens = {
     accessToken: body.access_token,
@@ -172,6 +201,7 @@ function keep(body, grant, idClaims) {
     idClaims: idClaims || tokens?.idClaims || null,
     grant,
   };
+  persist();
 }
 
 async function refresh() {
@@ -179,6 +209,7 @@ async function refresh() {
   const res = await post(m.token, { grant_type: 'refresh_token', refresh_token: tokens.refreshToken, ...clientAuth(m.issuer) });
   if (res.status !== 200 || !res.json?.access_token) {
     tokens = null;
+    persist();
     return false;
   }
   keep(res.json, 'authorization_code');
@@ -221,6 +252,7 @@ function status() {
 
 function signOut() {
   tokens = null;
+  persist();
 }
 
-module.exports = { startLogin, completeLogin, accessToken, status, signOut };
+module.exports = { startLogin, completeLogin, accessToken, status, signOut, restore };

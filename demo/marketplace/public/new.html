@@ -38,6 +38,34 @@
   <form id="form">
     <hr class="rule">
     <div class="section-head">
+      <p class="eyebrow">Section 0</p>
+      <div>
+        <h2>What approving it does</h2>
+        <p style="margin:0">A Principal version is deployed for real when approved; a catalogue entry is recorded only.</p>
+      </div>
+    </div>
+    <div class="field">
+      <div class="checklist">
+        <label class="check">
+          <input type="radio" name="kind" value="principal" checked>
+          <span class="role">Principal agent version, deployed at the agent provider</span>
+          <span class="tag">live</span>
+        </label>
+        <label class="check">
+          <input type="radio" name="kind" value="catalogue">
+          <span class="role">Catalogue entry only</span>
+          <span class="tag">record</span>
+        </label>
+      </div>
+      <p class="hint">
+        Approving a Principal version claims a slot at the provider (<code>…/agent/principal-N</code>), creates its
+        software statement in Raidiam, has the provider make CSRs for its keys and Raidiam certify them, grants its
+        roles, publishes its Entity Configuration and registers its SPIFFE ID with SPIRE. Needs a Raidiam session
+        (sign in, top right).
+      </p>
+    </div>
+    <hr class="rule">
+    <div class="section-head">
       <p class="eyebrow">Section 1</p>
       <div>
         <h2>What the agent is</h2>
@@ -264,6 +292,7 @@ document.getElementById('form').addEventListener('submit', async (e) => {
 
   const f = document.getElementById('form');
   const body = {
+    kind: f.kind.value,
     name: f.name.value.trim(),
     description: f.description.value.trim(),
     version: f.version.value.trim() || '1.0.0',
@@ -308,6 +337,22 @@ document.getElementById('form').addEventListener('submit', async (e) => {
         )
       )
       .join('');
+    // A Principal version: CBA-123, PingFederate, and the Principal's roles - a member of the agentic programme,
+    // with the AP orchestrator's capabilities.
+    if (document.querySelector('input[name=kind]:checked').value === 'principal' && entities.some((x) => x.organisationId === 'CBA-123')) {
+      orgSel.value = 'CBA-123';
+      orgSel.dispatchEvent(new Event('change'));
+      if ([...asSel.options].some((o) => o.value === '9b0983ce-781e-4f58-8620-0a752aafa054')) asSel.value = '9b0983ce-781e-4f58-8620-0a752aafa054';
+      for (const r of ['cba.agentic.member', 'cba.agentic.ap.orchestrator']) {
+        const box = rolesBox.querySelector(`input[value="${r}"]`);
+        if (box) box.checked = true;
+      }
+      updateCount();
+      const f = document.getElementById('form');
+      if (!f.name.value) f.name.value = 'Principal Agent';
+      if (!f.capability.value) f.capability.value = 'supplier-payments';
+      f.runtime.value = 'workload runtime';
+    }
     document.getElementById('orgHint').textContent =
       data.source === 'live'
         ? `${entities.length} entities read live from the directory.`

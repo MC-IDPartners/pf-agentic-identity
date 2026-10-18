@@ -580,7 +580,9 @@ def main():
     p.add_argument("--spire-parent", default="spiffe://example.org/spire/agent/x509pop/agent1")
     p.add_argument("--skip-negatives", action="store_true")
     p.add_argument("--keep", action="store_true", help="leave what the harness created")
-    p.add_argument("--report", help="write the report as JSON here")
+    p.add_argument("--report", default=os.path.join(HERE, "reports", "latest.json"),
+                   help="write the report as JSON here (default reports/latest.json, which the marketplace's "
+                        "Objectives page reads)")
     p.add_argument("--brief", action="store_true", help="one line per check, no objectives, explanations or evidence")
     a = p.parse_args()
     a.created = []
@@ -609,6 +611,7 @@ def main():
     print(f"\n{passed} passed, {len(rep.failed)} failed, {sum(r['status'] == 'skip' for r in rep.rows)} skipped "
           f"in {time.time() - started:.0f} s", flush=True)
     if a.report:
+        os.makedirs(os.path.dirname(os.path.abspath(a.report)), exist_ok=True)
         with open(a.report, "w") as f:
             json.dump({"agent": a.agent, "job": a.job, "attester": a.attester, "at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
                        "checks": rep.rows, "objectives": rep.coverage(), "agent_result": result}, f, indent=2)

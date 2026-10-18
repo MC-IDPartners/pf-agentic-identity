@@ -9,6 +9,7 @@ const auth = require('./raidiam-auth');
 
 async function main() {
   await db.connect();
+  await auth.restore();
 
   const app = express();
   app.use(express.json({ limit: '1mb' }));
@@ -45,6 +46,7 @@ async function main() {
   app.get('/new', page('new.html'));
   app.get('/instances', page('instances.html'));
   app.get('/agents/:softwareId', page('agent.html'));
+  app.get('/objectives', page('objectives.html'));
 
   app.use((err, req, res, next) => {
     const status = err.status || 500;

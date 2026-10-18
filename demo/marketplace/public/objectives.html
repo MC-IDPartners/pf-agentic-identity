@@ -1,0 +1,93 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Objectives · CBA Agent Marketplace</title>
+<link rel="stylesheet" href="/styles.css">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>◆</text></svg>">
+</head>
+<body>
+
+<header class="masthead">
+  <div class="masthead-inner">
+    <a class="wordmark" href="/">Agent<br>Marketplace</a>
+    <div class="estate">Commonwealth Bank<br>of Australia,<br>internal</div>
+    <nav>
+      <a href="/">Catalogue</a>
+      <a href="/instances">Instances</a>
+      <a href="/new">Register</a>
+      <a href="/objectives">Objectives</a>
+    </nav>
+    <div class="plane">Control plane</div>
+  </div>
+</header>
+
+<main>
+  <p class="eyebrow">Control centre</p>
+  <h1>PoC objectives and their evidence</h1>
+  <p class="lede">
+    Agentic IDAM - Trust Controller PoC Objectives (10 July 2026). Each objective lists what has shown it: the Principal
+    versions this marketplace deployed - their deploys, suspensions and reinstatements - the scenarios they ran, and
+    the test harness's last report. The latest result of each piece of evidence counts; one failing makes the
+    objective failing.
+  </p>
+
+  <div id="notice" class="notice hidden"></div>
+  <div class="stat-row" id="stats"></div>
+  <div id="harness" class="hint"></div>
+  <div id="list"><p class="loading"><span class="spinner"></span>Gathering the evidence…</p></div>
+
+  <footer>
+    The harness report is read from <code>spire-workload/reports/latest.json</code>:
+    <code>python harness.py --report reports/latest.json</code>.
+  </footer>
+</main>
+
+<script src="/app.js"></script>
+<script>
+const STATE = {
+  evidenced: ['pass', 'evidenced'],
+  failing: ['fail', 'failing'],
+  documentary: ['none', 'documentary'],
+  'not yet': ['none', 'not yet'],
+};
+
+(async () => {
+  try {
+    const data = await api.get('/objectives');
+    const count = (s) => data.objectives.filter((o) => o.state === s).length;
+    document.getElementById('stats').innerHTML = [
+      ['Evidenced', count('evidenced')], ['Failing', count('failing')],
+      ['Not yet', count('not yet')], ['Documentary', count('documentary')],
+    ].map(([l, v]) => `<div class="stat"><div class="label">${l}</div><div class="value">${v}</div></div>`).join('');
+    const h = data.harness;
+    document.getElementById('harness').innerHTML = h
+      ? `Harness report: ${esc(h.passed)} passed, ${esc(h.failed)} failed - ${esc(h.agent)}, attested by ${esc(h.attester || 'pingfederate')}, ${esc(when(h.at))}.`
+      : 'No harness report yet.';
+    document.getElementById('list').innerHTML = `
+      <div class="table-wrap"><table>
+        <thead><tr><th>Objective</th><th>State</th><th>Evidence (latest first)</th></tr></thead>
+        <tbody>${data.objectives.map((o) => `
+          <tr class="objective-row">
+            <td><strong>${esc(o.objective)}</strong><br>${esc(o.title)}</td>
+            <td><span class="verdict ${STATE[o.state][0]}">${esc(STATE[o.state][1])}</span></td>
+            <td>${o.evidence.slice(0, 8).map((e) => `
+              <div class="evidence"><span class="verdict ${e.passed ? 'pass' : 'fail'}">${e.passed ? 'PASS' : 'FAIL'}</span>
+                <code>${esc(e.source)}</code> ${e.source === 'marketplace' ? `<a href="/agents/${encodeURIComponent(e.agent)}">${esc(e.agent)}</a>` : ''}
+                ${esc(e.what)}${e.note ? ` - <span style="color:var(--quiet)">${esc(String(e.note).slice(0, 160))}</span>` : ''}</div>`).join('')}
+              ${o.evidence.length > 8 ? `<div class="evidence">… and ${o.evidence.length - 8} more</div>` : ''}
+              ${!o.evidence.length && o.documentary ? `<div class="evidence">${esc(o.documentary)}</div>` : ''}
+              ${!o.evidence.length && !o.documentary ? '<div class="evidence">nothing yet - deploy a Principal version and run its scenarios, or run the harness</div>' : ''}
+            </td>
+          </tr>`).join('')}
+        </tbody>
+      </table></div>`;
+  } catch (err) {
+    document.getElementById('list').innerHTML = '';
+    notice(document.getElementById('notice'), `Could not gather the evidence: ${err.message}`);
+  }
+})();
+</script>
+</body>
+</html>

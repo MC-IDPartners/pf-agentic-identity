@@ -672,3 +672,16 @@ footer {
 }
 
 .hidden { display: none !important; }
+
+/* Control centre additions: the Raidiam session in the masthead, scenario and objective rows. */
+.plane .session { font-size: 12px; text-transform: none; letter-spacing: 0; }
+.plane .session a, .plane a.session { color: inherit; text-decoration: underline; }
+.scenario { display: grid; grid-template-columns: 1fr auto; gap: 6px 18px; align-items: start; padding: 14px 0; border-top: 1px solid var(--line, #ddd); }
+.scenario h3 { margin: 0 0 4px; font-size: 16px; }
+.scenario .meta { font-size: 13px; color: var(--quiet, #666); }
+.verdict { font-family: var(--mono, monospace); font-size: 12px; padding: 2px 8px; border-radius: 3px; display: inline-block; }
+.verdict.pass { background: #e3f4e8; color: #17603a; }
+.verdict.fail { background: #fbe4e4; color: #8a1c1c; }
+.verdict.none { background: #eee; color: #555; }
+.objective-row td { vertical-align: top; }
+.evidence { font-size: 13px; margin: 2px 0; }

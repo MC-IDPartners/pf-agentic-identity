@@ -392,8 +392,33 @@ services:
       RAIDIAM_REDIRECT_URI: https://localhost:8443/cb
       MARKETPLACE_URL: http://localhost:${MARKETPLACE_PORT:-3000}
       ENTITY_ID_BASE: ${RAIDIAM_PROVIDER_ID:-https://host.docker.internal:8443}/agent
+      AUTHORISATION_SERVER_ID: ${AUTHORISATION_SERVER_ID:-9b0983ce-781e-4f58-8620-0a752aafa054}
+      PF_ISSUER: ${PF_BASE_URL:-https://bottle-platonic-parted.ngrok-free.dev}
+      PF_URL: https://host.docker.internal:${PF_PORT_HTTPS:-9031}
+      # A job run as a deployed version gets these, as the agent service does (AGENT_ENV_<NAME> -> <NAME>).
+      AGENT_ENV_AGENT_PROVIDER: ${RAIDIAM_PROVIDER_ID:-https://host.docker.internal:8443}
+      AGENT_ENV_ATTESTER: ${ATTESTER:-pingfederate}
+      AGENT_ENV_AUTHORITY: ${AUTHORITY_HINT:-https://authority.directory.cba.raidiam.io/authority/5a27c88b-97ed-4d37-a3c8-59c66b19aa25}
+      AGENT_ENV_TRUST_ANCHOR: ${TRUST_ANCHOR:-https://federation.directory.cba.raidiam.io/federation_entity/ff726945-ebd7-45e2-9869-c11227669433}
+      AGENT_ENV_TRUST_ANCHOR_ENV_FILE: /fed/vars.raidiam.env
+      AGENT_ENV_RESOURCE_IDS: ${RAIDIAM_RESOURCE_ID:-https://host.docker.internal:8446},${RAIDIAM_PAYMENTS_RESOURCE_ID:-https://host.docker.internal:8447},${RAIDIAM_PROVIDER_ID:-https://host.docker.internal:8443}/agent/accounts-agent,${RAIDIAM_PROVIDER_ID:-https://host.docker.internal:8443}/agent/payments-agent
+      AGENT_ENV_DIRECTORY_URL: ${DIRECTORY_URL:-https://data.directory.cba.raidiam.io}
+      AGENT_ENV_AUTHORISATION_SERVER_ID: ${AUTHORISATION_SERVER_ID:-9b0983ce-781e-4f58-8620-0a752aafa054}
+      AGENT_ENV_ISSUER_HOST_OVERRIDE: host.docker.internal:${PF_PORT_HTTPS:-9031}
+      AGENT_ENV_SPIRE_SOCKET: /run/spire/sockets/agent.sock
+      AGENT_ENV_INSTANCE_KEY_FILE: /state/instance.jwk
+      AGENT_ENV_PF_CA_FILE: /certs/pf-runtime-tls-ca.crt
+      AGENT_ENV_INVOICE_AMOUNT: ${INVOICE_AMOUNT:-420}
     volumes:
       - ../keys/raidiam/directory-client:/directory-client:ro
+      # The rig, driven from here: Docker (SPIRE entries, agent runs - a development shortcut, see
+      # ../raidiam/PROTECTED-ENVIRONMENTS.md), the files an agent run needs, and the SSF emitter's secret.
+      - /var/run/docker.sock:/var/run/docker.sock
+      - ../keys/pf-runtime-tls-ca.crt:/rig/certs/pf-runtime-tls-ca.crt:ro
+      - ../vars.raidiam.env:/rig/fed/vars.raidiam.env:ro
+      - ../secrets.env:/rig/secrets.env:ro
+      # The harness's last report (python harness.py --report reports/latest.json), for the Objectives page.
+      - ./reports:/rig/reports:ro
 
   marketplace-mongo:
     image: mongo:7

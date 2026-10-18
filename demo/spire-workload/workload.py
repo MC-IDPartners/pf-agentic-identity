@@ -555,9 +555,11 @@ def run_entity_host() -> None:
                 ag["public"]["kid"] = federation.vouched_kid(federation.subordinate_statement(authority, ag["id"]),
                                                               ag["public"])
                 registered = federation.explicit_register(federation.registration_endpoint(issuer), signer(ag)(issuer))
+                ag["registered_until"], ag["registration_error"] = registered.get("exp"), None
                 print(f"entity host: registered {ag['id']} at {issuer} until {registered.get('exp')}", flush=True)
             except Exception as e:
                 failed = True
+                ag["registration_error"] = str(e)[:300]
                 print(f"entity host: registration of {ag['id']} failed: {e}", flush=True)
         time.sleep(30 if failed else every)
 

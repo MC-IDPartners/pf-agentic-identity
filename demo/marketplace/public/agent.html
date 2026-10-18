@@ -45,6 +45,89 @@ function stepRow(s) {
     </div>`;
 }
 
+let scenarioDefs = [];
+
+function verdict(run) {
+  if (!run) return '<span class="verdict none">not run</span>';
+  return `<span class="verdict ${run.passed ? 'pass' : 'fail'}">${run.passed ? 'PASS' : 'FAIL'}</span>`;
+}
+
+function principalPanels() {
+  if (doc.kind !== 'principal') return '';
+  const d = doc.deploy || {};
+  const runs = (doc.runs || []).filter((r) => r.scenario);
+  const last = (id) => runs.slice().reverse().find((r) => r.scenario === id);
+  return `
+    <hr class="rule">
+    <div class="section-head">
+      <p class="eyebrow">At the provider</p>
+      <div>
+        <h2>Where this version stands</h2>
+        <dl class="kv">
+          <dt>slot</dt><dd class="plain">${esc(d.slot || '— (claimed on approval)')}</dd>
+          <dt>entity id</dt><dd class="plain">${esc(d.entityId || '—')}</dd>
+          <dt>SPIFFE ID</dt><dd class="plain">${esc(d.spiffeId || '—')}</dd>
+        </dl>
+        <div id="live-status" class="hint">${d.slot ? '<span class="spinner"></span>Asking the provider, Raidiam and PingFederate…' : ''}</div>
+      </div>
+    </div>
+    ${d.hosted || doc.status !== 'pending' ? `
+    <hr class="rule">
+    <div class="section-head">
+      <p class="eyebrow">Scenarios</p>
+      <div>
+        <h2>What it can and cannot do</h2>
+        <p style="margin:0 0 6px">Each runs the Principal agent as this version - a container SPIRE identifies as it - and is
+          judged against what should happen. Every run is evidence on the Objectives page.</p>
+        ${scenarioDefs.map((sc) => {
+          const r = last(sc.id);
+          const applicable = sc.when === doc.status;
+          return `<div class="scenario">
+            <div>
+              <h3>${esc(sc.title)} ${verdict(r)}</h3>
+              <div class="meta">${esc(sc.proves)}</div>
+              <div class="meta">expects <code>${esc(sc.expect.outcome)}${sc.expect.refusedAt ? ` at ${sc.expect.refusedAt}` : ''}</code>
+                · ${sc.objectives.map(esc).join(' ')}${r ? ` · last: <code>${esc(r.outcome)}${r.refusedAt ? ` at ${esc(r.refusedAt)}` : ''}</code> ${esc(when(r.at))}` : ''}</div>
+              ${r && r.reason ? `<div class="meta">${esc(r.reason.slice(0, 220))}</div>` : ''}
+            </div>
+            <div><button class="btn-sm" data-run="${esc(sc.id)}" ${applicable ? '' : 'disabled'} title="${applicable ? '' : `for a ${sc.when} version`}">Run</button></div>
+          </div>`;
+        }).join('')}
+      </div>
+    </div>` : ''}
+    ${runs.length ? `
+    <hr class="rule">
+    <div class="section-head">
+      <p class="eyebrow">Runs</p>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>When</th><th>Scenario</th><th>Verdict</th><th>Outcome</th><th>Steps</th></tr></thead>
+          <tbody>${runs.slice().reverse().slice(0, 20).map((r) => `<tr>
+            <td class="mono">${esc(when(r.at))}</td><td>${esc(r.title)}</td><td>${verdict(r)}</td>
+            <td class="mono">${esc(r.outcome)}${r.refusedAt ? ` at ${esc(r.refusedAt)}` : ''}</td>
+            <td class="mono" style="font-size:12px">${esc(Object.keys(r.steps || {}).join(' → '))}</td></tr>`).join('')}</tbody>
+        </table>
+      </div>
+    </div>` : ''}`;
+}
+
+async function liveStatus() {
+  const box = document.getElementById('live-status');
+  if (!box || !(doc.deploy || {}).slot) return;
+  try {
+    const st = await api.get(`/agents/${encodeURIComponent(softwareId)}/status`);
+    const pf = st.pingfederate || {};
+    const rd = st.raidiam || {};
+    box.innerHTML = `<dl class="kv">
+      <dt>provider</dt><dd>${st.hosted ? 'publishes its Entity Configuration' : esc(st.state)}</dd>
+      <dt>Raidiam</dt><dd>${rd.vouches ? `vouches for its keys (entity ${esc(rd.kids.entity)}, bridge ${esc(rd.kids.bridge || '—')})` : `does not vouch: ${esc(rd.error || 'keys not in the authority statement')}`}</dd>
+      <dt>PingFederate</dt><dd>${pf.registered_until ? `registered until ${esc(new Date(pf.registered_until * 1000).toLocaleString())}` : `not registered${pf.error ? `: ${esc(pf.error.slice(0, 160))}` : ''}`}</dd>
+    </dl>`;
+  } catch (err) {
+    box.textContent = `Could not ask the provider: ${err.message}`;
+  }
+}
+
 function render() {
   const r = doc.raidiam;
   const roles = doc.roles || [];
@@ -134,6 +217,7 @@ function render() {
       </div>
     </div>` : ''}
 
+    ${principalPanels()}
     ${(doc.steps || []).length ? `
     <hr class="rule">
     <div class="section-head">
@@ -152,7 +236,7 @@ function render() {
         <strong>This deployment</strong>
         <span class="done">${doc.status === 'approved' ? 'done' : esc(doc.status)}</span>
       </div>
-      ${doc.steps.map(stepRow).join('')}
+      ${doc.steps.slice(-60).map(stepRow).join('')}
     </div>` : ''}
 
     <hr class="rule">
@@ -205,24 +289,47 @@ document.addEventListener('click', async (e) => {
     }
     doc = await api.post(`/agents/${encodeURIComponent(softwareId)}/${act}`);
     render();
+    liveStatus();
     notice(
       document.getElementById('notice'),
       act === 'approve'
-        ? 'Approved. The software statement is live in the control plane.'
+        ? (doc.kind === 'principal' ? 'Deployed. Its statement, certificates and roles are in Raidiam; the provider hosts it.' : 'Approved. The software statement is live in the control plane.')
         : 'Suspended. The software statement is Inactive in the control plane.',
       'ok'
     );
   } catch (err) {
     notice(box, err.message);
-    document.querySelectorAll('[data-act]').forEach((b) => (b.disabled = false));
-    btn.textContent = label;
+    // The log holds what the control plane did before it stopped.
+    doc = await api.get(`/agents/${encodeURIComponent(softwareId)}`).catch(() => doc);
+    render();
+    liveStatus();
   }
+});
+
+document.addEventListener('click', async (e) => {
+  const btn = e.target.closest('[data-run]');
+  if (!btn) return;
+  const box = document.getElementById('notice');
+  box.classList.add('hidden');
+  document.querySelectorAll('[data-run]').forEach((b) => (b.disabled = true));
+  btn.innerHTML = '<span class="spinner"></span>Running…';
+  try {
+    const r = await api.post(`/agents/${encodeURIComponent(softwareId)}/run`, { scenario: btn.dataset.run });
+    notice(box, `${r.title}: ${r.passed ? 'PASS' : 'FAIL'} - ${r.outcome}${r.refusedAt ? ` at ${r.refusedAt}` : ''}${r.reason ? ` (${r.reason.slice(0, 200)})` : ''}`, r.passed ? 'ok' : 'error');
+  } catch (err) {
+    notice(box, err.message);
+  }
+  doc = await api.get(`/agents/${encodeURIComponent(softwareId)}`);
+  render();
+  liveStatus();
 });
 
 (async () => {
   try {
-    doc = await api.get(`/agents/${encodeURIComponent(softwareId)}`);
+    [doc, { scenarios: scenarioDefs }] = await Promise.all([
+      api.get(`/agents/${encodeURIComponent(softwareId)}`), api.get('/scenarios')]);
     render();
+    liveStatus();
     if (new URLSearchParams(location.search).get('created')) {
       notice(
         document.getElementById('notice'),
