@@ -160,6 +160,9 @@ router.post(
     }
     delete record.steps.attest?.artefact; // kept in the evidence pack, not on the agent record
     delete record.steps.token?.artefact;
+    for (const step of Object.values(record.steps)) {
+      if (step) delete step.exchange; // also kept in the evidence pack only
+    }
     await agents().updateOne({ softwareId: doc.softwareId }, { $push: { runs: { $each: [record], $slice: -100 } } });
     res.json(record);
   })

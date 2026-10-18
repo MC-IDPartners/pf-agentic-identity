@@ -67,9 +67,17 @@ function renderPack(row, check) {
       <tr><th>Software statement</th><td>${st.Status ? `${esc(st.Status)}, ${esc(st.ClientName)} ${esc(st.SoftwareVersion || '')}, roles: ${esc((st.roles || []).filter((x) => x.Status === 'Active').map((x) => x.Role).join(', '))}` : esc(st.note || '—')}</td></tr>
     </table>
 
-    <h2>The artefacts</h2>
     <p class="note">Decoded, signatures left out: none of this can be replayed as the credential. The SHA-256 is of the
       token as issued, to match it against logs.</p>
+    <h2>Request and response</h2>
+    ${(p.artefacts.exchanges || []).length ? (p.artefacts.exchanges).map((x) => `
+      <h3>${esc(x.step)}: ${esc(x.tool)} at ${esc(x.to || '')}</h3>
+      <p class="note">What this agent sent:</p>${json(x.request)}
+      ${x.error ? `<p class="note">The error it got${x.error.http_status ? ` (HTTP ${esc(x.error.http_status)})` : ''}:</p>${json(x.error.message)}`
+        : `<p class="note">The response${x.response_truncated ? ' (cut at 4 KB)' : ''} - SHA-256 of the whole: <span class="hash">${esc(x.response_sha256)}</span></p>${json(x.response)}`}`).join('')
+      : '<p class="note">no MCP call in this run (it stopped before one, or was refused earlier)</p>'}
+
+    <h2>The credentials it used</h2>
     ${p.artefacts.attestation ? `<h3>Client attestation</h3>${json(p.artefacts.attestation)}` : '<p class="note">no attestation in this run</p>'}
     ${p.artefacts.accessToken ? `<h3>Access token</h3>${json(p.artefacts.accessToken)}` : ''}
     ${(p.artefacts.delegations || []).map((d) => `<h3>Delegation: ${esc(d.step)}</h3>${json(d)}`).join('')}

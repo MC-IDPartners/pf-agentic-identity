@@ -11,7 +11,9 @@ const scenarios = require('./scenarios');
  * Evidence packs: one per scenario run, collected when the run ends and kept as it was.
  *
  * A pack holds the run (scenario, expectation, verdict, the agent's own record and narration), the artefacts it
- * used (the attestation and the token, decoded, their signatures left out so they cannot be replayed), and what
+ * used (the attestation and the token, decoded, their signatures left out so they cannot be replayed), each MCP call
+ * it made - the JSON-RPC request and the resource's or agent's response or error (capped, with the response's
+ * SHA-256) - and what
  * independent witnesses recorded in the seconds it took:
  *   - the gateway's policy enforcement point (coaz-pep): each decision, with its principal and reason;
  *   - PingFederate (the OpenID Federation modules' log lines): the attestation issued and verified, registrations;
@@ -130,12 +132,14 @@ async function collect(doc, record, startedAt, endedAt) {
     artefacts: {
       attestation: steps.attest?.artefact || null,
       accessToken: steps.token?.artefact || null,
+      exchanges: Object.entries(steps).filter(([, v]) => v && v.exchange).map(([step, v]) => ({
+        step, to: v.agent || v.endpoint || null, tool: v.tool || null, ...v.exchange })),
       delegations: ['accounts', 'payments'].filter((s) => steps[s]).map((s) => ({
         step: s, principalToken: steps[s].principal_token || null, delegation: steps[s].delegation || null,
         decision: steps[s].decision || null })),
     },
     agentRecord: Object.fromEntries(Object.entries(steps).map(([k, v]) => [k, Object.fromEntries(
-      Object.entries(v || {}).filter(([kk]) => kk !== 'artefact' && kk !== 'principal_token'))])),
+      Object.entries(v || {}).filter(([kk]) => !['artefact', 'principal_token', 'exchange'].includes(kk)))])),
     witnesses: { gateway, pingfederate, raidiam: { authorityStatement: authority, softwareStatement: statement } },
   };
   const hash = sha256(canonical(pack));

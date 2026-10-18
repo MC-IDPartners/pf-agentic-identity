@@ -87,6 +87,23 @@ def artefact(token: str) -> dict:
             "signature": "omitted", "sha256": hashlib.sha256(token.encode()).hexdigest()}
 
 
+EXCHANGE_CAP = 4096  # characters of a response kept as evidence; its SHA-256 covers all of it
+
+
+def exchange(tool: str, args: dict, response=None, error: str = None, http_status: int = None) -> dict:
+    """One MCP call as evidence: the JSON-RPC request this agent sent, and the response's content or the error - capped
+    at EXCHANGE_CAP characters, with the SHA-256 of the whole so a longer one can still be matched."""
+    out = {"request": {"jsonrpc": "2.0", "method": "tools/call", "params": {"name": tool, "arguments": args}}}
+    if error is not None:
+        out["error"] = {"message": str(error)[:EXCHANGE_CAP], "http_status": http_status}
+        return out
+    text = json.dumps(response, sort_keys=True, separators=(",", ":"))
+    out["response"] = response if len(text) <= EXCHANGE_CAP else text[:EXCHANGE_CAP]
+    out["response_truncated"] = len(text) > EXCHANGE_CAP
+    out["response_sha256"] = hashlib.sha256(text.encode()).hexdigest()
+    return out
+
+
 def record(step: str, **data) -> None:
     RESULT["steps"].setdefault(step, {}).update(data)
 
@@ -312,14 +329,14 @@ def orchestrate(job: dict, agent: str, attestation: str, key, resolver, authorit
             answer = asyncio.run(call_mcp(endpoint, tok, tool, args, key))
         except Exception as e:
             reason = next((str(x) for x in getattr(e, "exceptions", [e]) for x in getattr(x, "exceptions", [x])), str(e))
-            record(step, agent=callee["entity_id"], tool=tool, refused=reason)
+            record(step, agent=callee["entity_id"], tool=tool, refused=reason, exchange=exchange(tool, args, error=reason))
             raise Refused(step, f"{callee.get('resource_name')} refused {tool}: {reason}")
         if answer.get("error"):
             record(step, agent=callee["entity_id"], tool=tool, refused=answer.get("detail") or answer["error"],
-                   delegation=answer.get("delegation"))
+                   delegation=answer.get("delegation"), exchange=exchange(tool, args, response=answer))
             raise Refused(step, f"{callee.get('resource_name')} could not {tool}: {answer.get('detail') or answer['error']}")
         record(step, agent=callee["entity_id"], tool=tool, delegation=answer.get("delegation"),
-               decision=(answer.get("result") or {}).get("decision"))
+               decision=(answer.get("result") or {}).get("decision"), exchange=exchange(tool, args, response=answer))
         d = answer.get("delegation") or {}
         say(step, f"{callee.get('resource_name')} acted for {d.get('sub')} as {d.get('client_id')} "
                   f"(act {d.get('act')}) at {d.get('aud')}, bound to its own key {d.get('cnf_jkt')}")
@@ -435,11 +452,14 @@ def main() -> None:
     except Exception as e:
         status = next((getattr(x, "response", None).status_code for x in getattr(e, "exceptions", [e])
                        if getattr(x, "response", None) is not None), None)
-        record("call", endpoint=endpoint, tool=job["tool"], status=status)
+        reason = next((str(x) for x in getattr(e, "exceptions", [e]) for x in getattr(x, "exceptions", [x])), str(e))
+        record("call", endpoint=endpoint, tool=job["tool"], status=status,
+               exchange=exchange(job["tool"], job["args"], error=reason, http_status=status))
         raise Refused("call", f"the resource refused the call: {status or e!r}")
     say("call", f"{job['tool']} at {endpoint}:")
     print(json.dumps(result, indent=2), flush=True)
-    record("call", endpoint=endpoint, tool=job["tool"], status=200, decision=result.get("decision"))
+    record("call", endpoint=endpoint, tool=job["tool"], status=200, decision=result.get("decision"),
+           exchange=exchange(job["tool"], job["args"], response=result))
 
 
 if __name__ == "__main__":
