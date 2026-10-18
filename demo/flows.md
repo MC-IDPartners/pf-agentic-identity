@@ -34,29 +34,41 @@ The parties, as named in the diagrams:
 
 ## TC-01 Marketplace registration triggers the Agent Identity workflow
 
-**What it shows:** approving a Principal version in the marketplace starts the whole identity workflow. That covers the
-statement, the certificates, the roles, its publication and its workload registration, with no step done by hand.
+**What it shows:** approving a Principal version in the marketplace starts the whole identity workflow, with no step done
+by hand:
+- the statement, the certificates and the roles in Raidiam;
+- the version's publication by the provider;
+- its workload registration in SPIRE;
+- with the KMS (OpenBao), its bridge key, created in the KMS. Versions are enrolled by name, so there is no limit and
+  PingFederate needs no restart.
 
-**Proved by:** the marketplace's *deploy* action, whose log records each step against Raidiam's API.
+**Proved by:** the marketplace's *deploy* action, whose log records each step against Raidiam's API and the KMS.
 
 ```mermaid
 sequenceDiagram
     participant Op as Operator
     participant MP as Marketplace
     participant PR as Provider
+    participant KMS as KMS (OpenBao)
     participant RD as Raidiam
     participant SP as SPIRE
-    Op->>MP: register Principal Agent 1.0.0, then approve
-    MP->>PR: claim a Principal slot
-    PR-->>MP: principal-1, its entity id and SPIFFE ID
-    MP->>RD: POST softwarestatements, ClientId is the slot
+    Op->>MP: register Principal Agent 2.0.0, then approve
+    MP->>PR: claim a version
+    PR-->>MP: principal-2, its entity id and SPIFFE ID
+    MP->>RD: POST softwarestatements, ClientId is the version
     RD-->>MP: statement id
     MP->>PR: CSRs for this statement
+    PR->>PR: entity key CSR, signed with the key the provider keeps
+    PR->>KMS: create bridge-principal-2, rsa-2048, not exportable
+    PR->>KMS: CSR for bridge-principal-2, subject CN is the statement id
+    KMS-->>PR: CSR signed inside the KMS by the key it holds
+    PR-->>MP: entity CSR and bridge CSR
     MP->>RD: POST certificates rtssigning, entity and bridge
     MP->>RD: POST authorityclaims, one per role
-    MP->>PR: host principal-1
-    MP->>SP: entry spiffe://example.org/principal-1
+    MP->>PR: host principal-2
+    MP->>SP: entry spiffe://example.org/principal-2
     MP-->>Op: deployed, with the step log
+    Note over PR,KMS: no slot, no limit - the next version is principal-3, enrolled the same way
 ```
 
 ## TC-02 The Trust Controller governs approval, suspension and withdrawal
@@ -452,24 +464,45 @@ sequenceDiagram
 
 ## TC-26 Cryptographic assurance with no private-key custody in the Trust Controller
 
-**What it shows:** Raidiam certifies public keys and never holds a private one. The provider makes every key, sends only
-CSRs, and signs with its own keys under the kids Raidiam publishes. Each instance's key never leaves its container.
+**What it shows:** Raidiam certifies public keys and never holds a private one. Each private key stays with whoever
+needs it:
+- **The provider** makes the agent's entity key and sends only its CSR.
+- **The KMS (OpenBao)** creates the agent's bridge key, the one PingFederate authenticates the agent with, and keeps it.
+  It is never exported, and the KMS signs both its CSR and every bridge assertion. No bridge private key sits in a
+  file, in PingFederate's configuration or with the provider.
+- **Each instance's key** never leaves its container.
 
-**Proved by:** the marketplace's *deploy* action (CSRs only), the harness's `Raidiam vouches for the agent's entity key`
-and `attested by` checks.
+The KMS gives each party one right: PingFederate may only sign with bridge keys, and the provider may only create them
+and get their CSRs.
+
+**Proved by:**
+- the marketplace's *deploy* action (CSRs only);
+- the read-back that Raidiam's certified bridge key is the KMS's key;
+- the harness's `Raidiam vouches for the agent's entity key` and `attested by` checks;
+- every attested token in the harness, its bridge assertion signed in the KMS.
 
 ```mermaid
 sequenceDiagram
     participant PR as Provider
+    participant KMS as KMS (OpenBao)
     participant MP as Marketplace
     participant RD as Raidiam
     participant AG as Agent
-    PR->>PR: entity and bridge keys, private halves kept
-    PR-->>MP: CSRs only
+    participant PF as PingFed
+    PR->>PR: entity key made and kept by the provider
+    PR->>KMS: create the bridge key, never exported
+    KMS-->>PR: a CSR only, signed inside the KMS
+    PR-->>MP: entity CSR and bridge CSR, no private key
     MP->>RD: certify the CSRs
     RD-->>MP: certificates, public keys and kids
     RD->>RD: publishes the public keys in its subordinate statement
     AG->>AG: instance key made in the container, never sent
+    AG->>PF: token request, attestation and DPoP proof
+    PF->>KMS: sign the bridge assertion with the agent's bridge key
+    KMS-->>PF: the signature, the key stays in the KMS
+    PF->>PF: verify it with the key Raidiam certified
+    PF-->>AG: access token bound to the instance key
+    Note over RD,PF: no private key in Raidiam, in PingFederate's configuration or in a file
 ```
 
 ## TC-27 A governed, versioned capability envelope
