@@ -80,6 +80,13 @@ def say(step: str, text: str) -> None:
     print(f"[{step}] {text}", flush=True)
 
 
+def artefact(token: str) -> dict:
+    """A JWT as evidence: its header and claims, and the SHA-256 of the whole token to match it against logs. The
+    signature is left out, so the evidence cannot be replayed as the credential."""
+    return {"header": jwt.get_unverified_header(token), "claims": jwt.decode(token, options={"verify_signature": False}),
+            "signature": "omitted", "sha256": hashlib.sha256(token.encode()).hexdigest()}
+
+
 def record(step: str, **data) -> None:
     RESULT["steps"].setdefault(step, {}).update(data)
 
@@ -299,6 +306,7 @@ def orchestrate(job: dict, agent: str, attestation: str, key, resolver, authorit
 
     def ask(callee: dict, tool: str, args: dict, step: str) -> dict:
         tok = token(usable_as, callee["resource"], agent, attestation, key)
+        record(step, principal_token=artefact(tok))  # the token this agent hands the one it calls
         endpoint = (callee.get("endpoints") or [callee["resource"].rstrip("/") + "/mcp/v1"])[0]
         try:
             answer = asyncio.run(call_mcp(endpoint, tok, tool, args, key))
@@ -356,6 +364,7 @@ def main() -> None:
     spiffe_id = claims.get("spiffe_id") or claims.get("sub_spiffe_id") or (claims.get("workload") or {}).get("spiffe_id")
     say("attest", f"attested by {claims['iss']} as an instance of {claims['sub']} until {time.ctime(claims['exp'])}"
                   + (f" (SPIFFE ID {spiffe_id})" if spiffe_id else ""))
+    record("attest", artefact=artefact(attestation))
     record("attest", attester=ATTESTER, status=200, iss=claims["iss"], sub=claims["sub"], spiffe_id=spiffe_id,
            cnf_kid=claims.get("cnf", {}).get("jwk", {}).get("kid"), kid=jwt.get_unverified_header(attestation).get("kid"),
            claims=sorted(claims))
@@ -415,6 +424,7 @@ def main() -> None:
     at = jwt.decode(access_token, options={"verify_signature": False})
     say("token", f"client_id {at.get('client_id')}, aud {at.get('aud')}, bound to this instance's key "
                  f"(cnf.jkt {(at.get('cnf') or {}).get('jkt')}), expires {time.ctime(at['exp'])}")
+    record("token", artefact=artefact(access_token))
     record("token", client_id=at.get("client_id"), aud=at.get("aud"), iss=at.get("iss"),
            cnf_jkt=(at.get("cnf") or {}).get("jkt"), instance_jkt=jwk_thumbprint(public_jwk(key)))
 

@@ -6,6 +6,9 @@ const config = require('./config');
 const db = require('./db');
 const api = require('./routes/api');
 const auth = require('./raidiam-auth');
+const evidence = require('./evidence');
+const objectives = require('./objectives');
+const report = require('./report');
 
 async function main() {
   await db.connect();
@@ -47,6 +50,25 @@ async function main() {
   app.get('/instances', page('instances.html'));
   app.get('/agents/:softwareId', page('agent.html'));
   app.get('/objectives', page('objectives.html'));
+
+  // Printable evidence (src/report.js): one run's pack, and the objectives report with every pack's hash.
+  app.get('/evidence/:id', async (req, res, next) => {
+    try {
+      const row = await evidence.get(req.params.id);
+      if (!row) return res.status(404).send('no such evidence pack');
+      res.type('html').send(report.renderPack(row, await evidence.verify(req.params.id)));
+    } catch (err) {
+      next(err);
+    }
+  });
+  app.get('/objectives/report', async (req, res, next) => {
+    try {
+      const data = { ...(await objectives.compute()), generatedAt: new Date().toISOString() };
+      res.type('html').send(report.renderObjectives(data, evidence.sha256(evidence.canonical(data))));
+    } catch (err) {
+      next(err);
+    }
+  });
 
   app.use((err, req, res, next) => {
     const status = err.status || 500;

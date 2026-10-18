@@ -34,6 +34,8 @@
   </p>
 
   <div id="notice" class="notice hidden"></div>
+  <p><a class="btn" href="/objectives/report" target="_blank">Evidence report</a>
+    <span class="hint">printable: every objective, its evidence, and each run's evidence pack with its hash</span></p>
   <div class="stat-row" id="stats"></div>
   <div id="harness" class="hint"></div>
   <div id="list"><p class="loading"><span class="spinner"></span>Gathering the evidence…</p></div>
@@ -75,7 +77,8 @@ const STATE = {
             <td>${o.evidence.slice(0, 8).map((e) => `
               <div class="evidence"><span class="verdict ${e.passed ? 'pass' : 'fail'}">${e.passed ? 'PASS' : 'FAIL'}</span>
                 <code>${esc(e.source)}</code> ${e.source === 'marketplace' ? `<a href="/agents/${encodeURIComponent(e.agent)}">${esc(e.agent)}</a>` : ''}
-                ${esc(e.what)}${e.note ? ` - <span style="color:var(--quiet)">${esc(String(e.note).slice(0, 160))}</span>` : ''}</div>`).join('')}
+                ${esc(e.what)}${e.note ? ` - <span style="color:var(--quiet)">${esc(String(e.note).slice(0, 160))}</span>` : ''}
+                ${e.evidence && e.evidence.id ? ` · <a href="/evidence/${encodeURIComponent(e.evidence.id)}" target="_blank">evidence</a>` : ''}</div>`).join('')}
               ${o.evidence.length > 8 ? `<div class="evidence">… and ${o.evidence.length - 8} more</div>` : ''}
               ${!o.evidence.length && o.documentary ? `<div class="evidence">${esc(o.documentary)}</div>` : ''}
               ${!o.evidence.length && !o.documentary ? '<div class="evidence">nothing yet - deploy a Principal version and run its scenarios, or run the harness</div>' : ''}

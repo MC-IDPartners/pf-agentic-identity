@@ -94,6 +94,7 @@ function principalPanels() {
               <div class="meta">expects <code>${esc(sc.expect.outcome)}${sc.expect.refusedAt ? ` at ${sc.expect.refusedAt}` : ''}</code>
                 · ${sc.objectives.map(esc).join(' ')}${r ? ` · last: <code>${esc(r.outcome)}${r.refusedAt ? ` at ${esc(r.refusedAt)}` : ''}</code> ${esc(when(r.at))}` : ''}</div>
               ${r && r.reason ? `<div class="meta">${esc(r.reason.slice(0, 220))}</div>` : ''}
+              ${r && r.evidence && r.evidence.id ? `<div class="meta"><a href="/evidence/${esc(r.evidence.id)}" target="_blank">evidence pack</a> <code>${esc(r.evidence.sha256.slice(0, 16))}…</code></div>` : ''}
             </div>
             <div><button class="btn-sm" data-run="${esc(sc.id)}" ${applicable ? '' : 'disabled'} title="${applicable ? '' : `for a ${sc.when} version`}">Run</button></div>
           </div>`;
@@ -106,11 +107,12 @@ function principalPanels() {
       <p class="eyebrow">Runs</p>
       <div class="table-wrap">
         <table>
-          <thead><tr><th>When</th><th>Scenario</th><th>Verdict</th><th>Outcome</th><th>Steps</th></tr></thead>
+          <thead><tr><th>When</th><th>Scenario</th><th>Verdict</th><th>Outcome</th><th>Steps</th><th>Evidence</th></tr></thead>
           <tbody>${runs.slice().reverse().slice(0, 20).map((r) => `<tr>
             <td class="mono">${esc(when(r.at))}</td><td>${esc(r.title)}</td><td>${verdict(r)}</td>
             <td class="mono">${esc(r.outcome)}${r.refusedAt ? ` at ${esc(r.refusedAt)}` : ''}</td>
-            <td class="mono" style="font-size:12px">${esc(Object.keys(r.steps || {}).join(' → '))}</td></tr>`).join('')}</tbody>
+            <td class="mono" style="font-size:12px">${esc(Object.keys(r.steps || {}).join(' → '))}</td>
+            <td>${r.evidence && r.evidence.id ? `<a href="/evidence/${esc(r.evidence.id)}" target="_blank">view</a> · <a href="/api/evidence/${esc(r.evidence.id)}">JSON</a>` : '—'}</td></tr>`).join('')}</tbody>
         </table>
       </div>
     </div>` : ''}`;

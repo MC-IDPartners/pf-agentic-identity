@@ -395,6 +395,9 @@ services:
       AUTHORISATION_SERVER_ID: ${AUTHORISATION_SERVER_ID:-9b0983ce-781e-4f58-8620-0a752aafa054}
       PF_ISSUER: ${PF_BASE_URL:-https://bottle-platonic-parted.ngrok-free.dev}
       PF_URL: https://host.docker.internal:${PF_PORT_HTTPS:-9031}
+      # Witnesses for the evidence packs: the gateway's PEP and PingFederate, read with docker logs.
+      COAZ_PEP_CONTAINER: spire-workload-coaz-pep-1
+      PF_CONTAINER: pf-agentic-identity
       # A job run as a deployed version gets these, as the agent service does (AGENT_ENV_<NAME> -> <NAME>).
       AGENT_ENV_AGENT_PROVIDER: ${RAIDIAM_PROVIDER_ID:-https://host.docker.internal:8443}
       AGENT_ENV_ATTESTER: ${ATTESTER:-pingfederate}

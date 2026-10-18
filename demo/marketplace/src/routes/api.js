@@ -8,6 +8,8 @@ const auth = require('../raidiam-auth');
 const raidiam = require('../raidiam');
 const deploy = require('../deploy');
 const scenarios = require('../scenarios');
+const evidence = require('../evidence');
+const objectives = require('../objectives');
 const { agents } = require('../db');
 
 const router = express.Router();
@@ -142,13 +144,22 @@ router.post(
     if (!doc) return res.status(404).json({ error: 'agent not found' });
     const scenario = scenarios.SCENARIOS.find((x) => x.id === (req.body || {}).scenario);
     if (!scenario) return res.status(400).json({ error: `unknown scenario: ${(req.body || {}).scenario}` });
+    const startedAt = Date.now();
     const out = await deploy.run(doc, scenario.job, scenario);
+    const endedAt = Date.now();
     const record = {
       scenario: scenario.id, title: scenario.title, job: scenario.job, objectives: scenario.objectives,
       expected: scenario.expect, passed: scenarios.judge(scenario, out.result),
       outcome: out.result.outcome, refusedAt: out.result.refused_at || null, reason: out.result.reason || null,
       steps: out.result.steps || {}, log: out.log, status: doc.status, at: new Date().toISOString(),
     };
+    try {
+      record.evidence = await evidence.collect(doc, record, startedAt, endedAt);
+    } catch (err) {
+      record.evidence = { error: `evidence not collected: ${err.message}` };
+    }
+    delete record.steps.attest?.artefact; // kept in the evidence pack, not on the agent record
+    delete record.steps.token?.artefact;
     await agents().updateOne({ softwareId: doc.softwareId }, { $push: { runs: { $each: [record], $slice: -100 } } });
     res.json(record);
   })
@@ -169,57 +180,21 @@ router.get(
 
 router.get('/scenarios', (req, res) => res.json({ scenarios: scenarios.SCENARIOS, actions: scenarios.ACTIONS }));
 
-// Every PoC objective and the evidence for it: the deployed versions' lifecycle actions and scenario runs, and the
-// harness's last report (python harness.py --report reports/latest.json, mounted at /rig/reports).
+// Every PoC objective and the evidence for it (src/objectives.js).
+router.get('/objectives', wrap(async (req, res) => res.json(await objectives.compute())));
+
+// Evidence packs (src/evidence.js): the list, one pack as JSON (a download), and whether it still holds.
+router.get('/evidence', wrap(async (req, res) => res.json({ packs: await evidence.list(req.query.softwareId) })));
 router.get(
-  '/objectives',
+  '/evidence/:id',
   wrap(async (req, res) => {
-    const docs = await agents().find({ kind: 'principal' }).toArray();
-    const evidence = Object.fromEntries(Object.keys(scenarios.OBJECTIVES).map((tc) => [tc, []]));
-    const add = (tcs, item) => tcs.forEach((tc) => evidence[tc] && evidence[tc].push(item));
-    for (const doc of docs) {
-      for (const h of doc.history || []) {
-        const action = h.action === 'approved' ? (doc.history.some((x) => x.action === 'suspended' && x.at < h.at) ? 'reinstate' : 'deploy')
-          : h.action === 'suspended' ? 'suspend' : null;
-        const failed = h.action.endsWith('-failed');
-        const base = failed ? (h.action.startsWith('approved') ? 'deploy' : 'suspend') : action;
-        if (!base) continue;
-        add(scenarios.ACTIONS[base].objectives, { source: 'marketplace', agent: doc.softwareId, what: base,
-          passed: !failed, note: h.note, proves: scenarios.ACTIONS[base].proves, at: h.at });
-      }
-      for (const r of doc.runs || []) {
-        if (!r.scenario) continue;
-        add(r.objectives || [], { source: 'marketplace', agent: doc.softwareId, what: r.title, passed: r.passed,
-          note: r.passed ? `${r.outcome}${r.refusedAt ? ` at ${r.refusedAt}` : ''}` : `expected ${JSON.stringify(r.expected)}, got ${r.outcome}${r.refusedAt ? ` at ${r.refusedAt}` : ''}: ${r.reason || ''}`.slice(0, 240),
-          at: r.at });
-      }
-    }
-    let harness = null;
-    try {
-      harness = JSON.parse(require('fs').readFileSync('/rig/reports/latest.json', 'utf8'));
-      for (const row of harness.checks || []) {
-        add(row.objectives || [], { source: 'harness', agent: harness.agent, what: row.check,
-          passed: row.status === 'pass', skipped: row.status === 'skip', note: row.detail, proves: row.proves, at: harness.at });
-      }
-    } catch { /* no report yet */ }
-    const objectives = Object.entries(scenarios.OBJECTIVES).map(([tc, title]) => {
-      const items = evidence[tc].filter((i) => !i.skipped);
-      const latest = {};
-      for (const i of items) {
-        const k = `${i.source}|${i.agent}|${i.what}`;
-        if (!latest[k] || latest[k].at < i.at) latest[k] = i;
-      }
-      const current = Object.values(latest);
-      const state = current.some((i) => !i.passed) ? 'failing' : current.length ? 'evidenced'
-        : scenarios.DOCUMENTARY[tc] ? 'documentary' : 'not yet';
-      return { objective: tc, title, state, documentary: scenarios.DOCUMENTARY[tc] || null,
-        evidence: current.sort((x, y) => (y.at || '').localeCompare(x.at || '')) };
-    });
-    res.json({ objectives, harness: harness ? { at: harness.at, agent: harness.agent, attester: harness.attester,
-      passed: (harness.checks || []).filter((c) => c.status === 'pass').length,
-      failed: (harness.checks || []).filter((c) => c.status === 'fail').length } : null });
+    const row = await evidence.get(req.params.id);
+    if (!row) return res.status(404).json({ error: 'no such evidence pack' });
+    res.set('content-disposition', `attachment; filename="evidence-${row.seq}-${row.softwareId}-${row.pack.run.scenario}.json"`)
+      .json({ sha256: row.sha256, pack: row.pack });
   })
 );
+router.get('/evidence/:id/verify', wrap(async (req, res) => res.json(await evidence.verify(req.params.id))));
 
 // Where the deployed version stands: hosted by the provider, vouched for by Raidiam, registered at PingFederate.
 router.get(

@@ -81,6 +81,9 @@ const config = {
     fedDir: process.env.RIG_FED_DIR || '/rig/fed',
     secretsFile: process.env.RIG_SECRETS_FILE || '/rig/secrets.env',
     pfUrl: process.env.PF_URL || 'https://host.docker.internal:9031',
+    // Witnesses for the evidence packs (src/evidence.js): the gateway's PEP and PingFederate, by container name.
+    coazContainer: process.env.COAZ_PEP_CONTAINER || 'spire-workload-coaz-pep-1',
+    pfContainer: process.env.PF_CONTAINER || 'pf-agentic-identity',
     pfIssuer: process.env.PF_ISSUER || 'https://bottle-platonic-parted.ngrok-free.dev',
   },
 
