@@ -15,6 +15,7 @@ The admin API is plain HTTP on PRINCIPAL_ADMIN_PORT (8091), inside the compose n
   POST /admin/versions/<slot>/csr          {softwareStatementId, organisationId} -> {entity, bridge} CSRs (PEM)
   POST /admin/versions/<slot>/host         publish its Entity Configuration and register it at PingFederate
   GET  /admin/versions/<slot>/status       hosted; whether Raidiam vouches for its keys yet; the kids it publishes
+  GET  /admin/versions/<slot>/keys         the public halves of its entity and bridge keys
   POST /admin/versions/<slot>/withdraw     stop publishing it (its Entity Configuration is gone; chains break)
   POST /admin/versions/<slot>/release      free the slot (its Raidiam statement is the marketplace's to retire)
 """
@@ -41,6 +42,7 @@ class Versions:
         self.trust_domain = os.environ.get("TRUST_DOMAIN", "example.org")
         self.server = None
         self.lock = threading.Lock()
+        self.wake = threading.Event()  # the entity host's registration loop: register a newly hosted version now
 
     # ── state ────────────────────────────────────────────────────────────────────────────────────────────────────
 
@@ -97,6 +99,7 @@ class Versions:
         self.hosted[:] = [h for h in self.hosted if h[0] != ag["id"]] + [(ag["id"], ag["bindings"])]
         if self.server:
             self.server.add(ag["id"], self.signer(ag))
+        self.wake.set()
         return ag
 
     def _unhost(self, slot):
@@ -178,6 +181,15 @@ class Versions:
             out["raidiam"] = {"vouches": False, "error": str(e)[:200]}
         return 200, out
 
+    def keys(self, slot):
+        """The public halves of the slot's entity and bridge keys - to find their certificates in Raidiam."""
+        out = {}
+        for name in ("entity", "bridge"):
+            with open(os.path.join(self._dir(slot), f"{name}.private.jwk.json")) as f:
+                jwk = json.load(f)
+            out[name] = {k: jwk[k] for k in ("kty", "n", "e")}
+        return 200, out
+
     def withdraw(self, slot):
         state = self._state(slot)
         if not state:
@@ -220,6 +232,8 @@ class Versions:
                     slot, action = parts[2], parts[3]
                     if method == "GET" and action == "status":
                         return versions.status(slot)
+                    if method == "GET" and action == "keys":
+                        return versions.keys(slot)
                     if method == "POST" and action == "csr":
                         return versions.csr(slot, self._json())
                     if method == "POST" and action == "host":

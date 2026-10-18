@@ -39,7 +39,8 @@ async function call(method, template, params, body, contentType) {
   const res = await request(method, target, {
     headers: {
       authorization: `Bearer ${token}`,
-      accept: 'application/json',
+      // Not application/json: the certificate upload answers 403 Forbidden to a request that asks for JSON only.
+      accept: '*/*',
       ...(body === undefined ? {} : { 'content-type': contentType || (raw ? 'text/plain' : 'application/json') }),
     },
     body: body === undefined ? undefined : raw ? body : JSON.stringify(body),

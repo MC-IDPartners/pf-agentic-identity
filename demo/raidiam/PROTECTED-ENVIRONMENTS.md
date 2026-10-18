@@ -164,6 +164,10 @@ the anchor's Entity Configuration, checked out of band.
 | Attester private keys inline (`OIDF_ATTESTER_SIGNING_JWK`, `attestation_signing_jwk`) | an OpenBao key reference |
 | The provider's attester key in a mounted file | an HSM or KMS key (AWS KMS, say) |
 | TLS from the rig's own CA | the bank's private CA (see 6) |
+| The marketplace drives Docker through its socket (SPIRE entries, agent runs) | a deployment pipeline with its own, scoped credentials (SPIRE's API, the platform's) |
+| An operator's Raidiam session, kept in an unauthenticated Mongo on the compose network | client credentials (`directory:management`) once Raidiam allows them, secrets in a vault |
+| The SSF emitter's secret mounted into the marketplace (`secrets.env`) | the lifecycle events raised by the agent provider or the Trust Controller as an SSF transmitter |
+| Principal version slots with bridge keys made in advance | bridge keys created on demand in OpenBao (`vault`) |
 
 ## What already works
 

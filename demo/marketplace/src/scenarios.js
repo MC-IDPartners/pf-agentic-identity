@@ -87,7 +87,7 @@ const SCENARIOS = [
   {
     id: 'while-suspended', title: 'Tries to act while suspended', job: 'get-balance', when: 'suspended',
     expect: { outcome: 'refused' }, objectives: ['TC-02', 'TC-04'],
-    proves: 'with its statement Inactive, its Entity Configuration withdrawn and account-disabled signalled, it cannot act',
+    proves: 'with its statement Suspended, its Entity Configuration withdrawn and account-disabled signalled, it cannot act',
   },
 ];
 
@@ -99,7 +99,7 @@ const ACTIONS = {
   },
   suspend: {
     objectives: ['TC-02', 'TC-04', 'TC-05'],
-    proves: 'suspension set its statement Inactive, raised account-disabled, and withdrew its Entity Configuration',
+    proves: 'suspension set its statement Suspended in Raidiam, raised account-disabled, and withdrew its Entity Configuration',
   },
   reinstate: {
     objectives: ['TC-02', 'TC-05'],

@@ -168,7 +168,7 @@ async function transition(softwareId, next, actor) {
   } else if (doc.raidiam) {
     set.raidiam = {
       ...doc.raidiam,
-      statementStatus: next === 'suspended' ? 'Inactive' : 'Active',
+      statementStatus: next === 'suspended' ? (principal ? 'Suspended' : 'Inactive') : 'Active',
       lastChangedAt: new Date().toISOString(),
     };
   }

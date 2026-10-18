@@ -31,7 +31,7 @@ function request(method, url, { headers = {}, body } = {}) {
       url,
       {
         method,
-        headers: { ...headers, ...(payload ? { 'content-length': payload.length } : {}) },
+        headers: { 'user-agent': 'cba-agent-marketplace', ...headers, ...(payload ? { 'content-length': payload.length } : {}) },
         ...options(),
         timeout: config.raidiam.timeoutMs,
       },

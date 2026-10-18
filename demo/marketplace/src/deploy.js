@@ -56,6 +56,7 @@ function statementBody(doc, d) {
     LogoUri: 'https://data.directory.cba.raidiam.io/logos/placeholder-logo.png',
     RedirectUri: [`${d.entityId}/callback`],
     Mode: 'Live',
+    Environment: 'Sandbox',
     SoftwareVersion: String(doc.version || '1'),
     AdditionalSoftwareMetadata: JSON.stringify(meta).slice(0, 252),
     OpenidFederationEnabled: true,
@@ -96,21 +97,48 @@ async function publish(doc, save) {
       await keep();
     }
 
-    // 3 + 4. CSRs from the provider, certified by Raidiam.
+    // 3 + 4. CSRs from the provider, certified by Raidiam. Certificates already on the statement - uploaded in the
+    // Raidiam website, when the API refused - are found by their public key.
     d.certificates = d.certificates || {};
+    if (!d.certificates.entity || !d.certificates.bridge) {
+      const mine = await rig.provider('GET', `/admin/versions/${d.slot}/keys`);
+      const certs = await raidiam.call('GET', `${P.softwareStatement}/certificates`, { orgId: org, ssId: d.softwareStatementId });
+      for (const name of ['entity', 'bridge']) {
+        const found = (certs || []).find((c) => c.Status === 'Active' && c.n === mine[name].n);
+        if (found && !d.certificates[name]) {
+          d.certificates[name] = { kid: found.kid };
+          add('certificate', `${name} key certified by Raidiam as ${found.keyType}, kid ${found.kid}`);
+        }
+      }
+      await keep();
+    }
     if (!d.certificates.entity || !d.certificates.bridge) {
       const csrs = await rig.provider('POST', `/admin/versions/${d.slot}/csr`,
         { softwareStatementId: d.softwareStatementId, organisationId: org });
+      d.csrs = csrs;
       add('certificate', `the provider made CSRs for its entity key and its bridge key (CN=${d.softwareStatementId}); the private keys stay with it`);
       for (const name of ['entity', 'bridge']) {
         if (d.certificates[name]) continue;
-        const cert = await raidiam.call('POST', P.certificates,
-          { orgId: org, ssId: d.softwareStatementId, type: 'rtssigning' }, csrs[name], 'application/x-pem-file');
-        d.certificates[name] = { kid: cert.kid || cert.Kid || cert.CertificateOrKeyId || null };
-        add('certificate', `${name} key certified by Raidiam as rtssigning${d.certificates[name].kid ? `, kid ${d.certificates[name].kid}` : ''}`);
-        await keep();
+        try {
+          const cert = await raidiam.call('POST', P.certificates,
+            { orgId: org, ssId: d.softwareStatementId, type: 'rtssigning' }, csrs[name], 'application/x-pem-file');
+          d.certificates[name] = { kid: cert.kid || cert.Kid || cert.CertificateOrKeyId || null };
+          add('certificate', `${name} key certified by Raidiam as rtssigning${d.certificates[name].kid ? `, kid ${d.certificates[name].kid}` : ''}`);
+          await keep();
+        } catch (err) {
+          if (err.status !== 403) throw err;
+          add('refused', `Raidiam's API refused to certify the ${name} key (403): upload its CSR in the Raidiam website instead - `
+            + `software statement ${d.softwareStatementId}, certificates, rtssigning - then approve again to carry on`,
+            describe(err));
+          d.awaitingUpload = true;
+        }
+      }
+      await keep();
+      if (!d.certificates.entity || !d.certificates.bridge) {
+        return { ok: false, steps, deploy: d, awaitingUpload: true };
       }
     }
+    d.awaitingUpload = false;
 
     // 5. Roles, from the organisation's own authority claims.
     d.roles = d.roles || {};
@@ -197,18 +225,21 @@ async function waitForTrust(slot, limitMs = 120000) {
 async function setStatus(doc, status) {
   const d = doc.deploy;
   const current = await raidiam.call('GET', P.softwareStatement, { orgId: doc.organisationId, ssId: d.softwareStatementId });
+  if (current.Status === status) return; // already so - and Raidiam refuses to re-send a suspended statement
   await raidiam.call('PUT', P.softwareStatement, { orgId: doc.organisationId, ssId: d.softwareStatementId },
-    { ...current, Status: status });
+    // Environment is required on an update, though not on create.
+    { ...current, Environment: current.Environment || 'Sandbox', Status: status });
 }
 
-/** Suspension: the statement Inactive, a Shared Signals account-disabled, the Entity Configuration withdrawn. */
+/** Suspension: the statement Suspended, a Shared Signals account-disabled, the Entity Configuration withdrawn. */
 async function suspend(doc) {
   const { steps, add } = recorder((doc.steps || []).length);
   const d = doc.deploy;
   if (!d?.softwareStatementId) return { ok: false, steps: [{ n: 1, kind: 'refused', message: 'not deployed', at: now() }] };
   try {
-    await setStatus(doc, 'Inactive');
-    add('statement', `software statement ${d.softwareStatementId} set to Inactive: no new trust from Raidiam`);
+    // Raidiam's status for this is Suspended (Inactive is not one its update schema accepts).
+    await setStatus(doc, 'Suspended');
+    add('statement', `software statement ${d.softwareStatementId} set to Suspended: no new trust from Raidiam`);
   } catch (err) {
     add('refused', `suspension refused at Raidiam: ${err.message}`, describe(err));
     return { ok: false, steps };

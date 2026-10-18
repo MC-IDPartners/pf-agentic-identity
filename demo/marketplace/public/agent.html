@@ -68,6 +68,11 @@ function principalPanels() {
           <dt>entity id</dt><dd class="plain">${esc(d.entityId || '—')}</dd>
           <dt>SPIFFE ID</dt><dd class="plain">${esc(d.spiffeId || '—')}</dd>
         </dl>
+        ${d.awaitingUpload ? `<div class="notice">Raidiam's API would not certify the keys. Upload these CSRs in the Raidiam
+          website - software statement <code>${esc(d.softwareStatementId)}</code>, certificates, <strong>rtssigning</strong> - then
+          approve again to carry on:
+          <a href="/api/agents/${encodeURIComponent(doc.softwareId)}/csr/entity">entity key CSR</a> ·
+          <a href="/api/agents/${encodeURIComponent(doc.softwareId)}/csr/bridge">bridge key CSR</a></div>` : ''}
         <div id="live-status" class="hint">${d.slot ? '<span class="spinner"></span>Asking the provider, Raidiam and PingFederate…' : ''}</div>
       </div>
     </div>

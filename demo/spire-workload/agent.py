@@ -348,7 +348,12 @@ def main() -> None:
            claims=sorted(claims))
 
     # 3. What the federation lets this agent do.
-    me = resolver.resolve(agent, "openid_relying_party")
+    try:
+        me = resolver.resolve(agent, "openid_relying_party")
+    except requests.HTTPError as e:
+        # The authority no longer vouches for this agent (suspended, withdrawn): nothing to act on.
+        record("envelope", error="not_vouched", detail=str(e)[:200])
+        raise Refused("envelope", f"the federation no longer vouches for this agent: {e}")
     rp = me["metadata"]["openid_relying_party"]
     envelope = rp.get("authorization_details_types") or []
     say("envelope", f"chain of {len(me['chain'])} to the anchor; Raidiam grants {envelope or 'no capabilities'}; "

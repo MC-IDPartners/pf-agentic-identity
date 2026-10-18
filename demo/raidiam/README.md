@@ -277,6 +277,48 @@ makes the provider the Principal's attester; `--report` writes the result as JSO
 The registration is still `entity-host`'s (0.7.0's token endpoint does not discover an unknown client), so
 `docker compose restart entity-host` after a restart of PingFederate.
 
+## The control centre: the marketplace deploys Principal versions
+
+The agent marketplace (`../marketplace`, in the rig's compose: http://localhost:3000) is the Agent registry and the
+demo's control centre. Approving a **Principal version** there deploys it for real, against Raidiam's admin API:
+
+| Step | What |
+|---|---|
+| slot | the provider claims a Principal slot, `https://host.docker.internal:8443/agent/principal-N` (`spire-workload/principals.py`) |
+| statement | `POST /organisations/CBA-123/softwarestatements`: self-managed OpenID Federation entity, `ClientId` = the slot, related to PingFederate |
+| certificates | the provider makes CSRs for its entity and bridge keys (`C=GB, O=CBA Trust Framework, OU=CBA-123, CN=<statement>`) - private keys stay with it - and `POST .../certificates/rtssigning` certifies each |
+| roles | `POST .../authorityclaims` per role, from the organisation's own claims (`GET /organisations/CBA-123/authorityclaims`): `{OrganisationAuthorisationDomainRoleClaimID, AuthorisationDomain, Role, Status}` |
+| host, SPIRE | the provider publishes its Entity Configuration; a SPIRE entry `spiffe://example.org/principal-N` <- `docker:label:app:principal-N` |
+| trust | Raidiam vouches for its keys; the provider registers it at PingFederate at once |
+
+Suspend sets the statement `Suspended` in Raidiam (the authority's `/fetch` then answers 404 for it), raises
+`account-disabled` at PingFederate's transmitter and withdraws its Entity Configuration; reinstate reverses all three.
+Each version's page runs the scenarios - acts as itself, agents act on its behalf, over the policy limit, outside its
+envelope, another workload, attested by the provider, while suspended - each judged against what should happen; the
+**Objectives** page lists TC-01..28 with the evidence from deploys, lifecycle actions, scenario runs and the
+harness's last report (`spire-workload/reports/latest.json`).
+
+**Signing in.** Raidiam allows `directory:management` only to a person's session for now, so the marketplace signs an
+operator in: PAR with a signed request object, PKCE, JARM, `private_key_jwt` with the directory client's `rtssigning`
+key over mutual TLS with its `rtstransport` certificate (`keys/raidiam/directory-client/`), scope `directory:website`.
+The client's redirect URI is `https://localhost:8443/cb`; the provider's gateway (Kong, 8443) routes `/cb` to the
+marketplace. The session, with its refresh token, is kept in the marketplace's Mongo. When Raidiam allows
+`directory:management` for client credentials: `RAIDIAM_GRANT=client_credentials`, nothing else.
+
+**Slots, not names.** PingFederate reads its bridge keys once, at start-up, so up.sh makes the slots' keys
+(`PRINCIPAL=<slot> raidiam/attested-client.sh keys`) and renders their bridge keys in advance;
+`RAIDIAM_PRINCIPAL_SLOTS` (default `principal-1` .. `principal-4`) names them. OpenBao (`vault` backing) would create
+them on demand.
+
+Raidiam's admin API, as found:
+
+- **`Accept`.** The certificate upload answers `403 {"errors":["Forbidden"]}` to `Accept: application/json`; send
+  `*/*`.
+- **`Environment`** is required on `PUT .../softwarestatements/{id}`, though not on create.
+- **Status** is `Active` or `Suspended`; `Inactive` fails the update schema. A suspended statement cannot be re-sent
+  with the same status (400).
+- **The RTS client** behind a new statement is created asynchronously (`RtsClientCreated`).
+
 ## In a protected environment
 
 Everything privately hosted, able to call Raidiam but not be called by it: what works, what does not, and what to fix

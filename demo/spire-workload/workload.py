@@ -530,7 +530,8 @@ def run_entity_host() -> None:
             others[ag["id"]] = signer(ag)
     for ag in agents[1:]:
         others[ag["id"]] = signer(ag)
-        documents[urlsplit(ag["id"]).path + "/.well-known/oauth-protected-resource"] = (lambda r: lambda: r)(ag["resource"])
+        if ag["resource"]:  # agents others call; a Principal version is a client only
+            documents[urlsplit(ag["id"]).path + "/.well-known/oauth-protected-resource"] = (lambda r: lambda: r)(ag["resource"])
     if provider_id:
         provider = provider_entity(provider_id, authority, hosted)
         others[provider_id] = provider["sign"]
@@ -561,7 +562,12 @@ def run_entity_host() -> None:
                 failed = True
                 ag["registration_error"] = str(e)[:300]
                 print(f"entity host: registration of {ag['id']} failed: {e}", flush=True)
-        time.sleep(30 if failed else every)
+        # A version the marketplace deploys wakes this at once (principals.Versions.wake), rather than at the next round.
+        if versions:
+            versions.wake.wait(30 if failed else every)
+            versions.wake.clear()
+        else:
+            time.sleep(30 if failed else every)
 
 
 def main() -> None:

@@ -154,6 +154,19 @@ router.post(
   })
 );
 
+// A deploy's CSRs, for uploading in the Raidiam website when its API will not certify them (PEM).
+router.get(
+  '/agents/:softwareId/csr/:name',
+  wrap(async (req, res) => {
+    const doc = await lifecycle.get(req.params.softwareId);
+    const pem = doc?.deploy?.csrs?.[req.params.name];
+    if (!pem) return res.status(404).json({ error: 'no CSR for that key on this deploy' });
+    res.type('application/x-pem-file')
+      .set('content-disposition', `attachment; filename="${doc.deploy.slot}-${req.params.name}-${doc.deploy.softwareStatementId}.csr"`)
+      .send(pem);
+  })
+);
+
 router.get('/scenarios', (req, res) => res.json({ scenarios: scenarios.SCENARIOS, actions: scenarios.ACTIONS }));
 
 // Every PoC objective and the evidence for it: the deployed versions' lifecycle actions and scenario runs, and the
