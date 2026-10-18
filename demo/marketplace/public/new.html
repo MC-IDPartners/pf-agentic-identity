@@ -1,0 +1,322 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Register an agent · CBA Agent Marketplace</title>
+<link rel="stylesheet" href="/styles.css">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>◆</text></svg>">
+</head>
+<body>
+
+<header class="masthead">
+  <div class="masthead-inner">
+    <a class="wordmark" href="/">Agent<br>Marketplace</a>
+    <div class="estate">Commonwealth Bank<br>of Australia,<br>internal</div>
+    <nav>
+      <a href="/">Catalogue</a>
+      <a href="/instances">Instances</a>
+      <a href="/new">Register</a>
+    </nav>
+    <div class="plane">Control plane</div>
+  </div>
+</header>
+
+<main>
+  <a class="back" href="/">← Back to the catalogue</a>
+
+  <p class="eyebrow">New software statement</p>
+  <h1>Register an agent</h1>
+  <p class="lede">
+    This records the agent and the identity it will need. Nothing reaches the control plane
+    until somebody approves it, and what you choose here is what the software statement will
+    ask for.
+  </p>
+
+  <div id="notice" class="notice hidden"></div>
+
+  <form id="form">
+    <hr class="rule">
+    <div class="section-head">
+      <p class="eyebrow">Section 1</p>
+      <div>
+        <h2>What the agent is</h2>
+        <p style="margin:0">The catalogue holds this, not the identity record.</p>
+      </div>
+    </div>
+
+    <div class="field">
+      <label class="lab" for="name">Name</label>
+      <input type="text" id="name" name="name" required placeholder="Accounts Payable Orchestrator 2">
+      <p class="hint">The deployed name is derived from this, for example <code>ap-orchestrator-2</code>.</p>
+    </div>
+
+    <div class="field">
+      <label class="lab" for="description">What it does</label>
+      <textarea id="description" name="description" placeholder="Approves and schedules supplier payments inside a bounded envelope, with a person in the loop."></textarea>
+    </div>
+
+    <div class="two-col">
+      <div class="field">
+        <label class="lab" for="version">Version</label>
+        <input type="text" id="version" name="version" value="1.0.0">
+      </div>
+      <div class="field">
+        <label class="lab" for="environment">Environment</label>
+        <select id="environment" name="environment">
+          <option value="sandbox">sandbox</option>
+          <option value="development">development</option>
+          <option value="test">test</option>
+          <option value="production">production</option>
+        </select>
+      </div>
+    </div>
+
+    <div class="two-col">
+      <div class="field">
+        <label class="lab" for="businessUnit">Business unit</label>
+        <input type="text" id="businessUnit" name="businessUnit" placeholder="Business Banking, Accounts Payable">
+      </div>
+      <div class="field">
+        <label class="lab" for="accountableOwner">Accountable owner</label>
+        <input type="text" id="accountableOwner" name="accountableOwner" placeholder="Kirsten Yeo, Accounts Payable Product">
+      </div>
+    </div>
+
+    <div class="two-col">
+      <div class="field">
+        <label class="lab" for="owner">Owner</label>
+        <input type="text" id="owner" name="owner" placeholder="CBA Business Banking">
+      </div>
+      <div class="field">
+        <label class="lab" for="capability">Capability</label>
+        <input type="text" id="capability" name="capability" placeholder="supplier-payments">
+      </div>
+    </div>
+
+    <hr class="rule">
+    <div class="section-head">
+      <p class="eyebrow">Section 2</p>
+      <div>
+        <h2>Which federation entity it registers under</h2>
+        <p style="margin:0">
+          The software statement is created under this organisation, and only the roles that
+          organisation holds can be requested.
+        </p>
+      </div>
+    </div>
+
+    <div class="field">
+      <label class="lab" for="organisationId">Federation entity</label>
+      <select id="organisationId" name="organisationId" required>
+        <option value="">Loading entities from the directory…</option>
+      </select>
+      <p class="hint" id="orgHint">Read live from the CBA Raidiam directory.</p>
+    </div>
+
+    <div class="field">
+      <label class="lab" for="authorisationServerId">Whose tokens it will accept</label>
+      <select id="authorisationServerId" name="authorisationServerId">
+        <option value="">Select a federation entity first</option>
+      </select>
+      <p class="hint">The authorisation server the agent authenticates against at runtime.</p>
+    </div>
+
+    <hr class="rule">
+    <div class="section-head">
+      <p class="eyebrow">Section 3</p>
+      <div>
+        <h2>The roles it will request</h2>
+        <p style="margin:0">
+          Each role is granted on the software statement as an authority claim once the agent
+          is approved.
+        </p>
+      </div>
+    </div>
+
+    <div class="field">
+      <div class="checklist" id="roles">
+        <p class="loading" style="padding:18px">Select a federation entity to see its roles.</p>
+      </div>
+      <p class="hint" id="roleCount">No roles selected.</p>
+    </div>
+
+    <hr class="rule">
+    <div class="section-head">
+      <p class="eyebrow">Section 4</p>
+      <div>
+        <h2>Evidence and runtime</h2>
+        <p style="margin:0">
+          Held by the catalogue and referenced from the identity, never copied into it.
+        </p>
+      </div>
+    </div>
+
+    <div class="two-col">
+      <div class="field">
+        <label class="lab" for="repository">Repository</label>
+        <input type="text" id="repository" name="repository" placeholder="https://github.com/commbank-agentic/ap-orchestrator">
+      </div>
+      <div class="field">
+        <label class="lab" for="sbom">Bill of materials</label>
+        <input type="text" id="sbom" name="sbom" placeholder="sbom/ap-orchestrator-2.3.0.cdx.json">
+      </div>
+    </div>
+
+    <div class="two-col">
+      <div class="field">
+        <label class="lab" for="clientType">Client type</label>
+        <select id="clientType" name="clientType">
+          <option value="self-hosted">self hosted</option>
+          <option value="managed">managed</option>
+        </select>
+      </div>
+      <div class="field">
+        <label class="lab" for="runtime">Runtime</label>
+        <select id="runtime" name="runtime">
+          <option value="redirect runtime">redirect runtime</option>
+          <option value="client credentials runtime">client credentials runtime</option>
+          <option value="workload runtime">workload runtime</option>
+        </select>
+      </div>
+    </div>
+
+    <div class="field">
+      <label class="lab" for="redirectUris">Redirect URIs</label>
+      <input type="text" id="redirectUris" name="redirectUris" placeholder="https://example.cba.com.au/callback, https://…">
+      <p class="hint">Comma separated. Leave blank for an agent with no redirect.</p>
+    </div>
+
+    <hr class="rule">
+    <div class="actions">
+      <button type="submit" class="btn-primary" id="submit">Register the agent</button>
+      <a class="btn" href="/">Cancel</a>
+    </div>
+    <p class="hint" style="margin-top:14px">
+      Registering leaves the agent pending. Nothing is written to the control plane until it
+      is approved.
+    </p>
+  </form>
+</main>
+
+<script src="/app.js"></script>
+<script>
+let entities = [];
+
+const orgSel = document.getElementById('organisationId');
+const asSel = document.getElementById('authorisationServerId');
+const rolesBox = document.getElementById('roles');
+const roleCount = document.getElementById('roleCount');
+
+function renderRoles(org) {
+  if (!org || !org.roles.length) {
+    rolesBox.innerHTML = '<p class="loading" style="padding:18px">This entity holds no active roles.</p>';
+    return;
+  }
+  rolesBox.innerHTML = org.roles
+    .map(
+      (r) => `
+      <label class="check">
+        <input type="checkbox" name="role" value="${esc(r.role)}">
+        <span class="role">${esc(r.role)}</span>
+        <span class="tag">${esc(r.type)}</span>
+      </label>`
+    )
+    .join('');
+  updateCount();
+}
+
+function updateCount() {
+  const n = rolesBox.querySelectorAll('input:checked').length;
+  roleCount.textContent = n ? `${n} role${n === 1 ? '' : 's'} selected.` : 'No roles selected.';
+}
+
+rolesBox.addEventListener('change', updateCount);
+
+orgSel.addEventListener('change', () => {
+  const org = entities.find((e) => e.organisationId === orgSel.value);
+
+  asSel.innerHTML = org
+    ? ['<option value="">None</option>']
+        .concat(
+          org.authorisationServers.map(
+            (a) => `<option value="${esc(a.id)}">${esc(a.name)}</option>`
+          )
+        )
+        .join('')
+    : '<option value="">Select a federation entity first</option>';
+
+  renderRoles(org);
+});
+
+document.getElementById('form').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const btn = document.getElementById('submit');
+  const box = document.getElementById('notice');
+  box.classList.add('hidden');
+
+  const roles = [...rolesBox.querySelectorAll('input:checked')].map((i) => i.value);
+  if (!roles.length) {
+    notice(box, 'Select at least one role for the agent to request.');
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+    return;
+  }
+
+  const f = document.getElementById('form');
+  const body = {
+    name: f.name.value.trim(),
+    description: f.description.value.trim(),
+    version: f.version.value.trim() || '1.0.0',
+    environment: f.environment.value,
+    businessUnit: f.businessUnit.value.trim(),
+    accountableOwner: f.accountableOwner.value.trim(),
+    owner: f.owner.value.trim(),
+    capability: f.capability.value.trim(),
+    organisationId: orgSel.value,
+    authorisationServerId: asSel.value,
+    roles,
+    repository: f.repository.value.trim(),
+    sbom: f.sbom.value.trim(),
+    clientType: f.clientType.value,
+    runtime: f.runtime.value,
+    redirectUris: f.redirectUris.value.split(',').map((s) => s.trim()).filter(Boolean),
+  };
+
+  btn.disabled = true;
+  btn.innerHTML = '<span class="spinner"></span>Registering…';
+
+  try {
+    const doc = await api.post('/agents', body);
+    location.href = `/agents/${encodeURIComponent(doc.softwareId)}?created=1`;
+  } catch (err) {
+    notice(box, err.message);
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+    btn.disabled = false;
+    btn.textContent = 'Register the agent';
+  }
+});
+
+(async () => {
+  try {
+    const data = await api.get('/entities');
+    entities = data.entities || [];
+    orgSel.innerHTML = ['<option value="">Select an entity…</option>']
+      .concat(
+        entities.map(
+          (e) =>
+            `<option value="${esc(e.organisationId)}">${esc(e.name)} · ${esc(e.organisationId)}</option>`
+        )
+      )
+      .join('');
+    document.getElementById('orgHint').textContent =
+      data.source === 'live'
+        ? `${entities.length} entities read live from the directory.`
+        : `${entities.length} entities from the bundled snapshot; the live directory was unreachable.`;
+  } catch (err) {
+    orgSel.innerHTML = '<option value="">Could not load entities</option>';
+    notice(document.getElementById('notice'), `Could not load federation entities: ${err.message}`);
+  }
+})();
+</script>
+</body>
+</html>

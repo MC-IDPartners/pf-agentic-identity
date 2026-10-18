@@ -1,0 +1,240 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Agent · CBA Agent Marketplace</title>
+<link rel="stylesheet" href="/styles.css">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>◆</text></svg>">
+</head>
+<body>
+
+<header class="masthead">
+  <div class="masthead-inner">
+    <a class="wordmark" href="/">Agent<br>Marketplace</a>
+    <div class="estate">Commonwealth Bank<br>of Australia,<br>internal</div>
+    <nav>
+      <a href="/">Catalogue</a>
+      <a href="/instances">Instances</a>
+      <a href="/new">Register</a>
+    </nav>
+    <div class="plane">Control plane</div>
+  </div>
+</header>
+
+<main>
+  <a class="back" href="/">← Back to the catalogue</a>
+  <div id="notice" class="notice hidden"></div>
+  <div id="body"><p class="loading"><span class="spinner"></span>Loading the agent…</p></div>
+</main>
+
+<script src="/app.js"></script>
+<script>
+const softwareId = decodeURIComponent(location.pathname.split('/agents/')[1] || '');
+let doc = null;
+
+function stepRow(s) {
+  const refused = s.kind === 'refused';
+  return `
+    <div class="step${refused ? ' refused' : ''}">
+      <div class="n">${String(s.n).padStart(2, '0')}</div>
+      <div class="kind">${esc(refused ? 'refused' : s.kind)}</div>
+      <div class="msg">${esc(s.message)}
+        ${s.detail ? `<div class="detail">${esc(s.detail)}</div>` : ''}
+      </div>
+    </div>`;
+}
+
+function render() {
+  const r = doc.raidiam;
+  const roles = doc.roles || [];
+  const granted = new Set((r && r.rolesGranted) || []);
+
+  const actions = [];
+  if (doc.status === 'pending') {
+    actions.push('<button class="btn-primary" data-act="approve">Approve and publish</button>');
+  }
+  if (doc.status === 'approved') {
+    actions.push('<button class="btn-danger" data-act="suspend">Suspend</button>');
+  }
+  if (doc.status === 'suspended') {
+    actions.push('<button class="btn-primary" data-act="approve">Reinstate</button>');
+  }
+  if (doc.status !== 'approved') {
+    actions.push('<button class="btn-sm" data-act="remove">Remove from catalogue</button>');
+  }
+
+  document.getElementById('body').innerHTML = `
+    <p class="eyebrow">${r ? 'Identity published by the marketplace' : 'Catalogue entry'}</p>
+    <h1>${esc(doc.name)}</h1>
+    <p class="sid" style="font-family:var(--mono);color:var(--quiet);margin:-6px 0 16px">${esc(doc.softwareId)}</p>
+    <p class="lede">${esc(doc.description || 'No description recorded.')}</p>
+
+    <div class="stat-row">
+      <div class="stat"><div class="label">Owner</div><div class="value">${esc(doc.owner || doc.businessUnit || '—')}</div></div>
+      <div class="stat"><div class="label">Status</div><div class="value">${pill(doc.status)}</div></div>
+      <div class="stat"><div class="label">May ask for</div><div class="value">${roles.length} role${roles.length === 1 ? '' : 's'}</div></div>
+      <div class="stat"><div class="label">Resolvable</div><div class="value${doc.status === 'approved' ? ' green' : ''}">${
+        doc.status === 'approved' ? 'yes, through the CBA authority' : 'no'
+      }</div></div>
+    </div>
+
+    <div class="actions" id="actions">${actions.join('')}</div>
+
+    <hr class="rule">
+    <div class="section-head">
+      <p class="eyebrow">Who is accountable,<br>and for what</p>
+      <div class="panel-grid">
+        <div>
+          <dl class="kv">
+            <dt>version</dt><dd>${esc(doc.version || '—')}</dd>
+            <dt>owner</dt><dd>${esc(doc.owner || '—')}</dd>
+            <dt>business unit</dt><dd>${esc(doc.businessUnit || '—')}</dd>
+            <dt>accountable owner</dt><dd>${esc(doc.accountableOwner || '—')}</dd>
+            <dt>environment</dt><dd>${esc(doc.environment || '—')}</dd>
+            <dt>capability</dt><dd>${esc(doc.capability || '—')}</dd>
+            <dt>federation entity</dt><dd>${esc(doc.organisationId)}</dd>
+            <dt>authenticates</dt><dd>${esc(doc.authorisationServerName || '—')}</dd>
+          </dl>
+        </div>
+        <div>
+          <h3>The evidence the catalogue holds</h3>
+          <dl class="kv" style="grid-template-columns:150px 1fr">
+            <dt>repository</dt><dd class="plain">${esc(doc.repository || '—')}</dd>
+            <dt>bill of materials</dt><dd class="plain">${esc(doc.sbom || '—')}</dd>
+          </dl>
+          <h3 style="margin-top:22px">The roles it requests</h3>
+          <div class="chips">
+            ${roles.map((x) => `<span class="chip${granted.has(x) ? ' granted' : ''}">${esc(x)}</span>`).join('') || '<span class="chip">none</span>'}
+          </div>
+          ${granted.size ? '<p class="hint">Highlighted roles are granted on the software statement.</p>' : ''}
+        </div>
+      </div>
+    </div>
+
+    ${r ? `
+    <hr class="rule">
+    <div class="section-head">
+      <p class="eyebrow">In the control plane</p>
+      <div>
+        <h2>What the control plane issued</h2>
+        <p style="margin:0 0 18px">
+          A record, a certificate and the roles that make the capability grant. Read back after
+          writing, because a write nobody checked is not evidence.
+        </p>
+        <dl class="kv">
+          <dt>entity id</dt><dd class="plain">${esc(r.entityId)}</dd>
+          <dt>software statement</dt><dd class="plain">${esc(r.softwareStatementId)}</dd>
+          <dt>signs with</dt><dd class="plain">${esc(r.signingKid || '—')}</dd>
+          <dt>statement status</dt><dd>${esc(r.statementStatus || '—')}</dd>
+          <dt>published by</dt><dd class="plain">this marketplace, on the agent's behalf</dd>
+          <dt>published at</dt><dd class="plain">${esc(when(r.publishedAt))}</dd>
+          <dt>mode</dt><dd class="plain">${esc(r.mode)}</dd>
+        </dl>
+      </div>
+    </div>` : ''}
+
+    ${(doc.steps || []).length ? `
+    <hr class="rule">
+    <div class="section-head">
+      <p class="eyebrow">Live</p>
+      <div>
+        <h2>What the control plane did</h2>
+        <p style="margin:0">
+          Each line is one call and its answer, in the order they happened. A step that was
+          refused is shown as a refusal, because a refusal nobody can see is indistinguishable
+          from a request that was never made.
+        </p>
+      </div>
+    </div>
+    <div class="log">
+      <div class="log-head">
+        <strong>This deployment</strong>
+        <span class="done">${doc.status === 'approved' ? 'done' : esc(doc.status)}</span>
+      </div>
+      ${doc.steps.map(stepRow).join('')}
+    </div>` : ''}
+
+    <hr class="rule">
+    <div class="section-head">
+      <p class="eyebrow">Lifecycle</p>
+      <div>
+        <h2>Every decision on this record</h2>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>When</th><th>Action</th><th>Actor</th><th>Note</th></tr></thead>
+            <tbody>
+              ${(doc.history || [])
+                .slice()
+                .reverse()
+                .map(
+                  (h) => `<tr>
+                    <td class="mono">${esc(when(h.at))}</td>
+                    <td class="mono">${esc(h.action)}</td>
+                    <td class="mono">${esc(h.actor)}</td>
+                    <td>${esc(h.note || '—')}</td>
+                  </tr>`
+                )
+                .join('')}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>`;
+}
+
+document.addEventListener('click', async (e) => {
+  const btn = e.target.closest('[data-act]');
+  if (!btn) return;
+  const act = btn.dataset.act;
+  const box = document.getElementById('notice');
+  box.classList.add('hidden');
+
+  if (act === 'remove' && !confirm('Remove this agent from the catalogue?')) return;
+  if (act === 'suspend' && !confirm('Suspend this agent? Its identity will be set to Inactive in the control plane.')) return;
+
+  const label = btn.textContent;
+  document.querySelectorAll('[data-act]').forEach((b) => (b.disabled = true));
+  btn.innerHTML = '<span class="spinner"></span>Working…';
+
+  try {
+    if (act === 'remove') {
+      await api.del(`/agents/${encodeURIComponent(softwareId)}`);
+      location.href = '/';
+      return;
+    }
+    doc = await api.post(`/agents/${encodeURIComponent(softwareId)}/${act}`);
+    render();
+    notice(
+      document.getElementById('notice'),
+      act === 'approve'
+        ? 'Approved. The software statement is live in the control plane.'
+        : 'Suspended. The software statement is Inactive in the control plane.',
+      'ok'
+    );
+  } catch (err) {
+    notice(box, err.message);
+    document.querySelectorAll('[data-act]').forEach((b) => (b.disabled = false));
+    btn.textContent = label;
+  }
+});
+
+(async () => {
+  try {
+    doc = await api.get(`/agents/${encodeURIComponent(softwareId)}`);
+    render();
+    if (new URLSearchParams(location.search).get('created')) {
+      notice(
+        document.getElementById('notice'),
+        'Registered. The agent is pending: approve it to create its identity in the control plane.',
+        'ok'
+      );
+    }
+  } catch (err) {
+    document.getElementById('body').innerHTML = '';
+    notice(document.getElementById('notice'), `Could not load this agent: ${err.message}`);
+  }
+})();
+</script>
+</body>
+</html>

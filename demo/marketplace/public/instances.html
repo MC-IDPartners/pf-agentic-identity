@@ -1,0 +1,127 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Instances · CBA Agent Marketplace</title>
+<link rel="stylesheet" href="/styles.css">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>◆</text></svg>">
+</head>
+<body>
+
+<header class="masthead">
+  <div class="masthead-inner">
+    <a class="wordmark" href="/">Agent<br>Marketplace</a>
+    <div class="estate">Commonwealth Bank<br>of Australia,<br>internal</div>
+    <nav>
+      <a href="/">Catalogue</a>
+      <a href="/instances">Instances</a>
+      <a href="/new">Register</a>
+    </nav>
+    <div class="plane">Control plane</div>
+  </div>
+</header>
+
+<main>
+  <p class="eyebrow">In the control plane</p>
+  <h1>Identities created in Raidiam Connect</h1>
+  <p class="lede">
+    Every agent the marketplace has published, with the software statement it holds and the
+    roles granted against it. The catalogue governs the agent, the control plane identifies it,
+    and the two are joined by a reference rather than by a copy.
+  </p>
+
+  <div id="notice" class="notice hidden"></div>
+  <div class="stat-row" id="stats"></div>
+  <div id="list"><p class="loading"><span class="spinner"></span>Loading instances…</p></div>
+
+  <hr class="rule">
+  <div class="section-head">
+    <p class="eyebrow">Reading<br>this page</p>
+    <div class="panel-grid">
+      <div>
+        <h3>Active</h3>
+        <p style="margin:0 0 16px">
+          The software statement is live, the roles are granted, and the federation resolves the
+          entity. The agent can ask an authorisation server for a token.
+        </p>
+        <h3>Inactive</h3>
+        <p style="margin:0">
+          The agent was suspended here. The statement remains in the control plane with its
+          status set to Inactive, so no new trust can be established from it.
+        </p>
+      </div>
+      <div>
+        <h3>Where the record lives</h3>
+        <p style="margin:0 0 16px">
+          The identity holds what it needs to be an identity. Ownership, classification,
+          evidence and the risk register entry stay in the catalogue, which is the system that
+          governs them.
+        </p>
+        <p style="margin:0" id="modeNote"></p>
+      </div>
+    </div>
+  </div>
+</main>
+
+<script src="/app.js"></script>
+<script>
+function row(a) {
+  const r = a.raidiam || {};
+  const granted = r.rolesGranted || [];
+  const active = r.statementStatus === 'Active';
+  return `
+    <tr>
+      <td>
+        <a href="/agents/${encodeURIComponent(a.softwareId)}" style="font-weight:600;color:var(--ink);text-decoration:none">${esc(a.name)}</a>
+        <div class="mono" style="color:var(--quiet);font-size:12px">${esc(a.softwareId)}</div>
+      </td>
+      <td class="mono nowrap">${esc(a.organisationId)}</td>
+      <td class="mono break">${esc(r.softwareStatementId || '—')}</td>
+      <td class="mono break">${esc(r.entityId || '—')}</td>
+      <td>
+        <div class="chips">${granted.map((x) => `<span class="chip granted">${esc(x)}</span>`).join('') || '—'}</div>
+      </td>
+      <td>
+        <span class="pill ${active ? 'approved' : 'suspended'}">${esc(r.statementStatus || '—')}</span>
+        <div class="mono" style="color:var(--quiet);font-size:11.5px;margin-top:6px">${esc(when(r.publishedAt))}</div>
+      </td>
+    </tr>`;
+}
+
+(async () => {
+  try {
+    const [data, cfg] = await Promise.all([api.get('/instances'), api.get('/config')]);
+    const list = data.instances || [];
+
+    const active = list.filter((a) => (a.raidiam || {}).statementStatus === 'Active').length;
+    const roles = list.reduce((n, a) => n + ((a.raidiam || {}).rolesGranted || []).length, 0);
+
+    document.getElementById('stats').innerHTML = `
+      <div class="stat"><div class="label">Software statements</div><div class="value">${list.length}</div></div>
+      <div class="stat"><div class="label">Active</div><div class="value green">${active}</div></div>
+      <div class="stat"><div class="label">Inactive</div><div class="value">${list.length - active}</div></div>
+      <div class="stat"><div class="label">Role claims granted</div><div class="value">${roles}</div></div>`;
+
+    document.getElementById('modeNote').innerHTML =
+      cfg.raidiamMode === 'live'
+        ? `Written to the live control plane at <code>${esc(cfg.baseUrl)}</code>.`
+        : 'The control plane is in mock mode: identifiers are generated locally and no outbound call is made. Set the Raidiam credentials to write for real.';
+
+    document.getElementById('list').innerHTML = list.length
+      ? `<div class="table-wrap"><table>
+          <thead><tr><th>Agent</th><th>Entity</th><th>Software statement</th><th>Entity id</th><th>Roles granted</th><th>Status</th></tr></thead>
+          <tbody>${list.map(row).join('')}</tbody>
+        </table></div>`
+      : `<div class="empty">
+          <p>Nothing has been published yet. Approve a pending agent and its identity will appear here.</p>
+          <a class="btn btn-primary" href="/">Go to the catalogue</a>
+        </div>`;
+  } catch (err) {
+    document.getElementById('list').innerHTML = '';
+    notice(document.getElementById('notice'), `Could not load instances: ${err.message}`);
+  }
+})();
+</script>
+</body>
+</html>

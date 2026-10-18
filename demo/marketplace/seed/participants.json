@@ -1,0 +1,165 @@
+[
+  {
+    "OrganisationId": "CBA-123",
+    "Status": "Active",
+    "OrganisationName": "CBA-Payments",
+    "LegalEntityName": "CBA",
+    "CountryOfRegistration": "AU",
+    "City": "Sydney",
+    "RegistrationNumber": "CBA",
+    "AuthorisationServers": [
+      {
+        "AuthorisationServerId": "480a9a34-22c2-4c24-b13b-a5ea51b808aa",
+        "CustomerFriendlyName": "CommBiz Identity Platform",
+        "CustomerFriendlyDescription": "Reference implementation standing in for the business banking authorization server. A segment specific platform inherited from the business banking stack.",
+        "Issuer": "https://commbiz.demo.cba.raidiam.io",
+        "OpenIDDiscoveryDocument": "https://commbiz.demo.cba.raidiam.io/.well-known/openid-configuration",
+        "Status": "Active"
+      },
+      {
+        "AuthorisationServerId": "5908f984-f097-4f47-b97e-7751ee433433",
+        "CustomerFriendlyName": "NetBank Identity Platform",
+        "CustomerFriendlyDescription": "Reference implementation standing in for the retail enterprise authorization server. The shared enterprise platform.",
+        "Issuer": "https://netbank.demo.cba.raidiam.io",
+        "OpenIDDiscoveryDocument": "https://netbank.demo.cba.raidiam.io/.well-known/openid-configuration",
+        "Status": "Active"
+      },
+      {
+        "AuthorisationServerId": "08a6c1be-bf7b-499d-9186-d663039b9be4",
+        "CustomerFriendlyName": "CBA Workforce Identity Platform",
+        "CustomerFriendlyDescription": "Reference implementation standing in for Microsoft Entra ID. The workforce platform. Staff and internal automation authenticate here.",
+        "Issuer": "https://workforce.demo.cba.raidiam.io",
+        "OpenIDDiscoveryDocument": "https://workforce.demo.cba.raidiam.io/.well-known/openid-configuration",
+        "Status": "Active"
+      },
+      {
+        "AuthorisationServerId": "87df1218-b437-46f1-ae2d-96cb0813d814",
+        "CustomerFriendlyName": "Institutional Banking and Markets Identity Platform",
+        "CustomerFriendlyDescription": "Reference implementation standing in for the institutional authorization server.",
+        "Issuer": "https://ibm.demo.cba.raidiam.io",
+        "OpenIDDiscoveryDocument": "https://ibm.demo.cba.raidiam.io/.well-known/openid-configuration",
+        "Status": "Active"
+      },
+      {
+        "AuthorisationServerId": "b2b89a4a-ccc9-487f-97e4-526e6b82a3ae",
+        "CustomerFriendlyName": "NetBank Customer Agent OP",
+        "CustomerFriendlyDescription": "Reference implementation standing in for the CBA retail authorization server in the customer agent journey.",
+        "Issuer": "https://auth.bank2.directory.showcase.raidiam.io",
+        "OpenIDDiscoveryDocument": "https://auth.bank2.directory.showcase.raidiam.io/.well-known/openid-configuration",
+        "Status": "Active"
+      },
+      {
+        "AuthorisationServerId": "9b0983ce-781e-4f58-8620-0a752aafa054",
+        "CustomerFriendlyName": "PingFederate (Docker dev)",
+        "CustomerFriendlyDescription": "Local PingFederate used for testing.",
+        "Issuer": "https://bottle-platonic-parted.ngrok-free.dev",
+        "OpenIDDiscoveryDocument": "https://bottle-platonic-parted.ngrok-free.dev/.well-known/openid-configuration",
+        "Status": "Active"
+      }
+    ],
+    "OrgDomainRoleClaims": [
+      { "Role": "cba.group.member", "Status": "Active", "RoleType": "Federation", "AuthorisationDomain": "CBA-Global" },
+      { "Role": "cba.oidc.participant", "Status": "Active", "RoleType": "Federation", "AuthorisationDomain": "CBA-Global" },
+      { "Role": "cba.banking.provider", "Status": "Active", "RoleType": "Federation", "AuthorisationDomain": "CBA-Global" },
+      { "Role": "cba.accounts.reader", "Status": "Active", "RoleType": "Federation", "AuthorisationDomain": "CBA-Global" },
+      { "Role": "cba.payments.initiator", "Status": "Active", "RoleType": "Federation", "AuthorisationDomain": "CBA-Global" },
+      { "Role": "cba.supplier.reader", "Status": "Active", "RoleType": "Federation", "AuthorisationDomain": "CBA-Global" },
+      { "Role": "cba.au.member", "Status": "Active", "RoleType": "Federation", "AuthorisationDomain": "CBA-Global" },
+      { "Role": "cba.agentic.member", "Status": "Active", "RoleType": "Federation", "AuthorisationDomain": "CBA-Global" },
+      { "Role": "cba.agentic.ap.orchestrator", "Status": "Active", "RoleType": "Federation", "AuthorisationDomain": "CBA-Global" },
+      { "Role": "cba.agentic.servicing.assistant", "Status": "Active", "RoleType": "Federation", "AuthorisationDomain": "CBA-Global" },
+      { "Role": "cba.agentic.workforce.assistant", "Status": "Active", "RoleType": "Federation", "AuthorisationDomain": "CBA-Global" },
+      { "Role": "cba.agentic.invoice.settler", "Status": "Active", "RoleType": "Federation", "AuthorisationDomain": "CBA-Global" },
+      { "Role": "cba.agentic.manufacturer", "Status": "Active", "RoleType": "Federation", "AuthorisationDomain": "CBA-Global" },
+      { "Role": "cba.agentic.partner.reader", "Status": "Active", "RoleType": "Federation", "AuthorisationDomain": "CBA-Global" },
+      { "Role": "cba.agentic.local", "Status": "Active", "RoleType": "Federation", "AuthorisationDomain": "CBA-Global" },
+      { "Role": "cba.agentic.lending.reader", "Status": "Active", "RoleType": "Federation", "AuthorisationDomain": "CBA-Global" },
+      { "Role": "cba.agentic.cards.reader", "Status": "Active", "RoleType": "Federation", "AuthorisationDomain": "CBA-Global" },
+      { "Role": "cba.agentic.markets.reader", "Status": "Active", "RoleType": "Federation", "AuthorisationDomain": "CBA-Global" },
+      { "Role": "cba.agentic.revoked", "Status": "Active", "RoleType": "Federation", "AuthorisationDomain": "CBA-Global" },
+      { "Role": "cba.resource.server", "Status": "Active", "RoleType": "Federation", "AuthorisationDomain": "CBA-Global" },
+      { "Role": "cba.enforcement.point", "Status": "Active", "RoleType": "Federation", "AuthorisationDomain": "CBA-Global" },
+      { "Role": "cba.directory.site.reader", "Status": "Active", "RoleType": "Directory", "AuthorisationDomain": "CBA-Global" }
+    ]
+  },
+  {
+    "OrganisationId": "CBA-BANKWEST",
+    "Status": "Active",
+    "OrganisationName": "Bankwest",
+    "LegalEntityName": "Bankwest, a division of Commonwealth Bank of Australia",
+    "CountryOfRegistration": "AU",
+    "City": "Perth",
+    "RegistrationNumber": "ABN 48 123 123 124",
+    "AuthorisationServers": [
+      {
+        "AuthorisationServerId": "29ea4ea1-99df-4433-b541-c3b38b0e7197",
+        "CustomerFriendlyName": "Bankwest Identity Platform",
+        "CustomerFriendlyDescription": "Reference implementation standing in for the Bankwest brand authorization server.",
+        "Issuer": "https://bankwest.demo.cba.raidiam.io",
+        "OpenIDDiscoveryDocument": "https://bankwest.demo.cba.raidiam.io/.well-known/openid-configuration",
+        "Status": "Active"
+      }
+    ],
+    "OrgDomainRoleClaims": [
+      { "Role": "cba.group.member", "Status": "Active", "RoleType": "Federation", "AuthorisationDomain": "CBA-Global" },
+      { "Role": "cba.oidc.participant", "Status": "Active", "RoleType": "Federation", "AuthorisationDomain": "CBA-Global" },
+      { "Role": "cba.banking.provider", "Status": "Active", "RoleType": "Federation", "AuthorisationDomain": "CBA-Global" },
+      { "Role": "cba.accounts.reader", "Status": "Active", "RoleType": "Federation", "AuthorisationDomain": "CBA-Global" },
+      { "Role": "cba.au.member", "Status": "Active", "RoleType": "Federation", "AuthorisationDomain": "CBA-Global" },
+      { "Role": "cba.agentic.member", "Status": "Active", "RoleType": "Federation", "AuthorisationDomain": "CBA-Global" },
+      { "Role": "cba.agentic.servicing.assistant", "Status": "Active", "RoleType": "Federation", "AuthorisationDomain": "CBA-Global" },
+      { "Role": "cba.agentic.workforce.assistant", "Status": "Active", "RoleType": "Federation", "AuthorisationDomain": "CBA-Global" }
+    ]
+  },
+  {
+    "OrganisationId": "CBA-COMMSEC",
+    "Status": "Active",
+    "OrganisationName": "CommSec",
+    "LegalEntityName": "Commonwealth Securities Limited",
+    "CountryOfRegistration": "AU",
+    "City": "Sydney",
+    "RegistrationNumber": "ABN 60 067 254 399",
+    "AuthorisationServers": [
+      {
+        "AuthorisationServerId": "5d7fd14f-90d3-45e4-8e4b-26fc3b11d952",
+        "CustomerFriendlyName": "CommSec Identity Platform",
+        "CustomerFriendlyDescription": "Reference implementation standing in for the broking authorization server.",
+        "Issuer": "https://commsec.demo.cba.raidiam.io",
+        "OpenIDDiscoveryDocument": "https://commsec.demo.cba.raidiam.io/.well-known/openid-configuration",
+        "Status": "Active"
+      }
+    ],
+    "OrgDomainRoleClaims": [
+      { "Role": "cba.group.member", "Status": "Active", "RoleType": "Federation", "AuthorisationDomain": "CBA-Global" },
+      { "Role": "cba.oidc.participant", "Status": "Active", "RoleType": "Federation", "AuthorisationDomain": "CBA-Global" },
+      { "Role": "cba.accounts.reader", "Status": "Active", "RoleType": "Federation", "AuthorisationDomain": "CBA-Global" },
+      { "Role": "cba.au.member", "Status": "Active", "RoleType": "Federation", "AuthorisationDomain": "CBA-Global" }
+    ]
+  },
+  {
+    "OrganisationId": "CBA-ASB",
+    "Status": "Active",
+    "OrganisationName": "ASB",
+    "LegalEntityName": "ASB Bank Limited",
+    "CountryOfRegistration": "NZ",
+    "City": "Auckland",
+    "RegistrationNumber": "NZBN 9429035859771",
+    "AuthorisationServers": [
+      {
+        "AuthorisationServerId": "e3a2fbfe-d549-4054-ae12-f54a7d389f8d",
+        "CustomerFriendlyName": "ASB FastNet Identity Platform",
+        "CustomerFriendlyDescription": "Reference implementation standing in for the ASB authorization server. A separately run subsidiary platform in another jurisdiction.",
+        "Issuer": "https://asb.demo.cba.raidiam.io",
+        "OpenIDDiscoveryDocument": "https://asb.demo.cba.raidiam.io/.well-known/openid-configuration",
+        "Status": "Active"
+      }
+    ],
+    "OrgDomainRoleClaims": [
+      { "Role": "cba.group.member", "Status": "Active", "RoleType": "Federation", "AuthorisationDomain": "CBA-Global" },
+      { "Role": "cba.oidc.participant", "Status": "Active", "RoleType": "Federation", "AuthorisationDomain": "CBA-Global" },
+      { "Role": "cba.banking.provider", "Status": "Active", "RoleType": "Federation", "AuthorisationDomain": "CBA-Global" },
+      { "Role": "cba.accounts.reader", "Status": "Active", "RoleType": "Federation", "AuthorisationDomain": "CBA-Global" },
+      { "Role": "cba.nz.member", "Status": "Active", "RoleType": "Federation", "AuthorisationDomain": "CBA-Global" }
+    ]
+  }
+]

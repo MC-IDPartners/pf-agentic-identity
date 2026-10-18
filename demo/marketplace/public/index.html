@@ -1,0 +1,131 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Catalogue · CBA Agent Marketplace</title>
+<link rel="stylesheet" href="/styles.css">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>◆</text></svg>">
+</head>
+<body>
+
+<header class="masthead">
+  <div class="masthead-inner">
+    <a class="wordmark" href="/">Agent<br>Marketplace</a>
+    <div class="estate">Commonwealth Bank<br>of Australia,<br>internal</div>
+    <nav>
+      <a href="/">Catalogue</a>
+      <a href="/instances">Instances</a>
+      <a href="/new">Register</a>
+    </nav>
+    <div class="plane">Control plane</div>
+  </div>
+</header>
+
+<main>
+  <p class="eyebrow">Catalogue</p>
+  <h1>Agents registered with the bank</h1>
+  <p class="lede">
+    The catalogue owns the agent as a registered thing: what it is, who is accountable for it,
+    and which federation entity it belongs to. Approving one creates its identity in Raidiam
+    Connect. Suspending one withdraws it.
+  </p>
+
+  <div id="notice" class="notice hidden"></div>
+
+  <div class="stat-row" id="stats"></div>
+
+  <div class="filters" id="filters">
+    <button class="filter" data-status="" aria-pressed="true">All</button>
+    <button class="filter" data-status="pending" aria-pressed="false">Pending</button>
+    <button class="filter" data-status="approved" aria-pressed="false">Approved</button>
+    <button class="filter" data-status="suspended" aria-pressed="false">Suspended</button>
+  </div>
+
+  <div id="list"><p class="loading"><span class="spinner"></span>Loading the catalogue…</p></div>
+
+  <footer>
+    Registered agents are governed here. Their identities live in the control plane and are
+    joined to this record by reference, not by copy.
+  </footer>
+</main>
+
+<script src="/app.js"></script>
+<script>
+let all = [];
+let filter = '';
+
+function card(a) {
+  const roles = (a.roles || []).length;
+  return `
+    <a class="card" href="/agents/${encodeURIComponent(a.softwareId)}">
+      <div class="card-top">
+        <div>
+          <h3>${esc(a.name)}</h3>
+          <div class="sid">${esc(a.softwareId)}</div>
+        </div>
+        ${pill(a.status)}
+      </div>
+      <p>${esc(a.description || 'No description recorded.')}</p>
+      <div class="card-foot">
+        <span>${esc(a.organisationId)}</span>
+        <span>${roles} role${roles === 1 ? '' : 's'}</span>
+        <span>${esc(a.environment || 'sandbox')}</span>
+      </div>
+    </a>`;
+}
+
+function render() {
+  const shown = filter ? all.filter((a) => a.status === filter) : all;
+  const list = document.getElementById('list');
+
+  if (!all.length) {
+    list.innerHTML = `
+      <div class="empty">
+        <p>Nothing is registered yet. Register an agent to create its identity in the control plane.</p>
+        <a class="btn btn-primary" href="/new">Register an agent</a>
+      </div>`;
+    return;
+  }
+
+  if (!shown.length) {
+    list.innerHTML = `<div class="empty"><p>No agents are ${esc(filter)}.</p></div>`;
+    return;
+  }
+
+  list.innerHTML = `<div class="grid">${shown.map(card).join('')}</div>`;
+}
+
+function stats() {
+  const n = (s) => all.filter((a) => a.status === s).length;
+  document.getElementById('stats').innerHTML = `
+    <div class="stat"><div class="label">Registered</div><div class="value">${all.length}</div></div>
+    <div class="stat"><div class="label">Pending approval</div><div class="value">${n('pending')}</div></div>
+    <div class="stat"><div class="label">In service</div><div class="value green">${n('approved')}</div></div>
+    <div class="stat"><div class="label">Suspended</div><div class="value">${n('suspended')}</div></div>`;
+}
+
+document.getElementById('filters').addEventListener('click', (e) => {
+  const btn = e.target.closest('.filter');
+  if (!btn) return;
+  filter = btn.dataset.status;
+  document.querySelectorAll('.filter').forEach((b) =>
+    b.setAttribute('aria-pressed', String(b === btn))
+  );
+  render();
+});
+
+(async () => {
+  try {
+    const data = await api.get('/agents');
+    all = data.agents || [];
+    stats();
+    render();
+  } catch (err) {
+    notice(document.getElementById('notice'), `Could not load the catalogue: ${err.message}`);
+    document.getElementById('list').innerHTML = '';
+  }
+})();
+</script>
+</body>
+</html>

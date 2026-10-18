@@ -1,0 +1,48 @@
+services:
+  mongo:
+    image: mongo:7
+    restart: unless-stopped
+    volumes:
+      - mongo-data:/data/db
+    healthcheck:
+      test: ["CMD", "mongosh", "--quiet", "--eval", "db.adminCommand('ping')"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 20s
+
+  app:
+    build: .
+    restart: unless-stopped
+    ports:
+      - "${PORT:-3000}:3000"
+    depends_on:
+      mongo:
+        condition: service_healthy
+    environment:
+      MONGO_URL: mongodb://mongo:27017
+      MONGO_DB: agent_marketplace
+
+      DIRECTORY_PARTICIPANTS_URL: ${DIRECTORY_PARTICIPANTS_URL:-https://data.directory.cba.raidiam.io}
+      DIRECTORY_CACHE_MINUTES: ${DIRECTORY_CACHE_MINUTES:-60}
+
+      # Leave the client id unset to run in mock mode.
+      RAIDIAM_MOCK: ${RAIDIAM_MOCK:-}
+      RAIDIAM_BASE_URL: ${RAIDIAM_BASE_URL:-}
+      RAIDIAM_TOKEN_URL: ${RAIDIAM_TOKEN_URL:-}
+      RAIDIAM_CLIENT_ID: ${RAIDIAM_CLIENT_ID:-}
+      RAIDIAM_CLIENT_SECRET: ${RAIDIAM_CLIENT_SECRET:-}
+      RAIDIAM_SCOPE: ${RAIDIAM_SCOPE:-}
+
+      # Mutual TLS material, if your tenant needs it. Mount the files below.
+      RAIDIAM_CERT_PATH: ${RAIDIAM_CERT_PATH:-}
+      RAIDIAM_KEY_PATH: ${RAIDIAM_KEY_PATH:-}
+      RAIDIAM_CA_PATH: ${RAIDIAM_CA_PATH:-}
+
+      ENTITY_ID_BASE: ${ENTITY_ID_BASE:-https://marketplace.demo.cba.raidiam.io/agents}
+    volumes:
+      # Drop client.crt / client.key here when using the live control plane.
+      - ./certs:/certs:ro
+
+volumes:
+  mongo-data:
