@@ -40,14 +40,26 @@ function describe(err) {
   return String(err.message || err).slice(0, 600);
 }
 
+/**
+ * The agent's SPIFFE binding as Raidiam takes it: AdditionalSoftwareMetadata, which Raidiam's authority publishes as a
+ * value policy on these five openid_relying_party members (a leaf cannot set them itself), so PingFederate reads them
+ * from the trust chain. At most 255 characters, so one attester: PingFederate's, the agents' default.
+ */
+function spiffeMetadata(spiffeId) {
+  const meta = JSON.stringify({
+    spiffe_id: spiffeId,
+    spiffe_trust_domain: spiffeId.split('/')[2],
+    spiffe_bundle_endpoint: config.rig.spireBundleUrl,
+    spiffe_bundle_format: 'jwks',
+    client_attesters: [config.rig.pfIssuer],
+  });
+  if (meta.length > 255) {
+    throw Object.assign(new Error(`the SPIFFE metadata for ${spiffeId} is ${meta.length} characters; Raidiam keeps at most 255`), { status: 400 });
+  }
+  return meta;
+}
+
 function statementBody(doc, d) {
-  const meta = {
-    spiffe_id: d.spiffeId,
-    trust_domain: d.spiffeId.split('/')[2],
-    bundle_url: config.rig.spireBundleUrl,
-    version: doc.version,
-    marketplace: doc.softwareId,
-  };
   return {
     ClientName: doc.name,
     Description: doc.description || `Principal agent version ${doc.version}, deployed by the agent marketplace`,
@@ -58,7 +70,7 @@ function statementBody(doc, d) {
     Mode: 'Live',
     Environment: 'Sandbox',
     SoftwareVersion: String(doc.version || '1'),
-    AdditionalSoftwareMetadata: JSON.stringify(meta).slice(0, 252),
+    AdditionalSoftwareMetadata: spiffeMetadata(d.spiffeId),
     OpenidFederationEnabled: true,
     OpenidFederationEntityManagementType: 'openid_entity_self_managed',
     RequireSignedRequestObject: false,
@@ -296,4 +308,19 @@ async function status(doc) {
   return rig.provider('GET', `/admin/versions/${d.slot}/status`);
 }
 
-module.exports = { publish, suspend, reinstate, run, status };
+/**
+ * Sets the SPIFFE metadata on an existing statement - one the marketplace did not create, or one created before Raidiam
+ * published these members. The whole record is sent back with it, as Raidiam's update requires (a save without the
+ * field resets it), and read back.
+ */
+async function setSpiffeMetadata(orgId, ssId, spiffeId) {
+  const current = await raidiam.call('GET', P.softwareStatement, { orgId, ssId });
+  const metadata = spiffeMetadata(spiffeId);
+  await raidiam.call('PUT', P.softwareStatement, { orgId, ssId },
+    { ...current, Environment: current.Environment || 'Sandbox', AdditionalSoftwareMetadata: metadata });
+  const back = await raidiam.call('GET', P.softwareStatement, { orgId, ssId });
+  return { softwareStatementId: ssId, clientId: back.ClientId, status: back.Status,
+    additionalSoftwareMetadata: back.AdditionalSoftwareMetadata, matches: back.AdditionalSoftwareMetadata === metadata };
+}
+
+module.exports = { publish, suspend, reinstate, run, status, setSpiffeMetadata };

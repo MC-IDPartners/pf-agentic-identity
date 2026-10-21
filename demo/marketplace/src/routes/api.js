@@ -181,6 +181,20 @@ router.get(
   })
 );
 
+// Sets an existing statement's SPIFFE metadata (src/deploy.js setSpiffeMetadata): {softwareStatementId, spiffeId,
+// organisationId?}. A write to Raidiam with the operator's session.
+router.post(
+  '/raidiam-spiffe-metadata',
+  wrap(async (req, res) => {
+    const { softwareStatementId, spiffeId, organisationId } = req.body || {};
+    if (!softwareStatementId || !/^spiffe:\/\/[^/]+\/.+/.test(spiffeId || '')) {
+      return res.status(400).json({ error: 'softwareStatementId and a spiffe:// spiffeId are required' });
+    }
+    res.json(await deploy.setSpiffeMetadata(organisationId || process.env.RAIDIAM_ORGANISATION_ID || 'CBA-123',
+      softwareStatementId, spiffeId));
+  })
+);
+
 router.get('/scenarios', (req, res) => res.json({ scenarios: scenarios.SCENARIOS, actions: scenarios.ACTIONS }));
 
 // Every PoC objective and the evidence for it (src/objectives.js).
