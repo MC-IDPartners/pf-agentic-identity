@@ -228,8 +228,8 @@ if [[ "${PF_PROFILE:-}" == raidiam ]]; then
   # (OIDF_ATTESTATION_AUTO_REGISTRATION) - a Principal Raidiam hosts, or a sub-agent serving its own configuration at
   # <RAIDIAM_PROVIDER_ID>/agent/<name>. Those configurations and SPIRE's keys are served from the Docker host, a
   # private address the fetch policy refuses unless named.
-  AUTHORITY="$(sed -n 's/^OIDF_FEDERATION_TRUST_ANCHORS=\([^,]*\).*/\1/p' "$HERE/vars.raidiam.env" | head -1)"
-  [[ -n "$AUTHORITY" ]] || { echo "ERROR: vars.raidiam.env names no OIDF_FEDERATION_TRUST_ANCHORS" >&2; exit 1; }
+  AUTHORITY="$(sed -n 's/^OIDF_FEDERATION_TRUST_ANCHORS=\([^,]*\).*/\1/p' "$CTX/vars.env" | head -1)"
+  [[ -n "$AUTHORITY" ]] || { echo "ERROR: no OIDF_FEDERATION_TRUST_ANCHORS in the rendered environment" >&2; exit 1; }
   { echo "OIDF_ATTESTER_FEDERATION_AUTHORITY=$AUTHORITY"
     echo "OIDF_ATTESTER_ISSUER=$PF_BASE_URL"
     echo "OIDF_ATTESTATION_AUTO_REGISTRATION=true"
