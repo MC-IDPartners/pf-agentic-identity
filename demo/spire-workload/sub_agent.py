@@ -17,6 +17,7 @@ Environment: AGENT_ID, AUTHORITY_HINT, ENTITY_KEY_FILE, BRIDGE_JWKS_FILE, AGENT_
 identifier), AUTHORISATION_SERVER (an issuer), ISSUER_HOST_OVERRIDE, PF_CA_FILE, LISTEN_PORT, INSTANCE_KEY_FILE,
 SPIRE_SOCKET, AGENT_ALLOWED_HOSTS.
 """
+import asyncio
 import contextvars
 import json
 import os
@@ -89,7 +90,9 @@ async def delegate(tool: str, args: dict) -> dict:
     if not caller:
         return {"error": "no caller token"}
     try:
-        token = exchange(caller)
+        # Off the event loop: at this agent's first exchange PingFederate registers it, fetching the Entity
+        # Configuration this same server serves - blocking here would leave that fetch waiting until it timed out.
+        token = await asyncio.to_thread(exchange, caller)
     except Exception as e:
         print(f"{KIND}-agent: {e}", flush=True)
         return {"error": "delegation_refused", "detail": str(e)}
