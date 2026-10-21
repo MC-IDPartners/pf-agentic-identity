@@ -4,16 +4,11 @@ It is handed one thing - the identifier its agent was issued (AGENT_ID) - and wo
 federation, as agent-r does:
 
   1. instance key     a key of this running copy's own (INSTANCE_KEY_FILE), created on first run; it never leaves
-  2. attestation      this copy attested on SPIRE's word (its JWT-SVID), by one of two attesters (ATTESTER):
-                      pingfederate (default)  PingFederate's own attester, POST <issuer>/federation/attestation
-                                              {client_id, instance_key, svid, proof}: it checks the SVID against SPIRE
-                                              and the agent's bindings, read from the provider's Entity Configuration
-                                              through its chain to Raidiam's anchor, and signs with the key
-                                              PingFederate's own Entity Configuration publishes
-                      provider                the agent provider - the federation entity that hosts this agent -
-                                              POST <provider>/attest {client_id, instance_jwk, svid}, as for agent-r
-                                              (which sends no evidence)
-                      Either way the token endpoint trusts the attester through its federation chain.
+  2. attestation      this copy attested on SPIRE's word (its JWT-SVID) by PingFederate's own attester, POST
+                      <issuer>/federation/attestation {client_id, instance_key, svid, proof}: it checks the SVID against
+                      SPIRE and the agent's SPIFFE binding, which Raidiam's authority publishes for it, and signs with
+                      the key PingFederate's own Entity Configuration publishes. The token endpoint trusts the attester
+                      through its federation chain, and registers the agent from Raidiam at its first token.
   3. envelope         its own capabilities: its chain resolved to the pinned anchor, Raidiam's policy applied,
                       authorization_details_types read off the result. Raidiam's /resolve cannot reach an entity
                       in the protected network, so the chain is resolved here (fedresolve)
@@ -109,7 +104,7 @@ def record(step: str, **data) -> None:
 
 
 class Refused(SystemExit):
-    """The run stopped for a trust reason - a refusal by the agent itself, the provider, the authorisation server
+    """The run stopped for a trust reason - a refusal by the agent itself, the attester, the authorisation server
     or the resource - rather than a fault."""
 
     def __init__(self, step: str, reason: str):
@@ -170,7 +165,7 @@ def public_jwk(key) -> dict:
 
 
 def dpop_proof(key, htm: str, htu: str, access_token: str = None, nonce: str = None) -> str:
-    """An RFC 9449 proof signed by the instance key: the key the provider attested (the attestation's cnf), so the
+    """An RFC 9449 proof signed by the instance key: the key the attester attested (the attestation's cnf), so the
     token PingFederate issues is bound to this instance (cnf.jkt), and every call proves possession of it."""
     claims = {"htm": htm, "htu": htu.split("?")[0].split("#")[0], "iat": int(time.time()), "jti": str(uuid.uuid4())}
     if access_token:
@@ -180,7 +175,6 @@ def dpop_proof(key, htm: str, htu: str, access_token: str = None, nonce: str = N
     return jwt.encode(claims, key, "ES256", headers={"typ": "dpop+jwt", "jwk": public_jwk(key)})
 
 
-ATTESTER = os.environ.get("ATTESTER", "pingfederate").lower()
 
 
 def fetch_svid(spire, audience: str, attempts: int = 3) -> str:
@@ -196,45 +190,36 @@ def fetch_svid(spire, audience: str, attempts: int = 3) -> str:
             time.sleep(2 * (attempt + 1))
 
 
-def attest(client_id: str, key, public: dict, provider: str, issuer: str, ca) -> str:
-    """This instance's client attestation, on SPIRE's word: from PingFederate's attester (ATTESTER=pingfederate) or
-    the agent provider's (ATTESTER=provider). Raises Refused("attest", ...) when the attester says no."""
+def attest(client_id: str, key, public: dict, issuer: str, ca) -> str:
+    """This instance's client attestation, on SPIRE's word, from PingFederate's attester: its discovery document, then a
+    mint with the SVID (audience: its issuer) and a proof of the instance key. Raises Refused("attest", ...) when the
+    attester says no."""
     spire = SpireWorkloadApiSvidSource(socket_path=os.environ.get("SPIRE_SOCKET", "/run/spire/sockets/agent.sock"),
                                        spire_agent=os.environ.get("SPIRE_AGENT", "spire-agent"))
-    if ATTESTER == "provider":
-        svid = fetch_svid(spire, provider)
-        r = requests.post(f"{provider}/attest", json={"client_id": client_id, "instance_jwk": public, "svid": svid},
-                          timeout=20, verify=ca)
-        field, who = "wallet_attestation", "the provider"
-    elif ATTESTER == "pingfederate":
-        # PingFederate's attester: its discovery document, then a mint with the SVID (audience: its issuer) and a
-        # proof of the instance key.
-        issuer = issuer.rstrip("/")
-        doc = requests.get(federation.reachable(issuer + "/.well-known/client-attester"), timeout=15, verify=ca).json()
-        audience = doc.get("evidence_audience") or doc.get("pop_audience") or issuer
-        # The attester binds a piece of evidence to the first instance key it attests (instance_attestation_bound), and
-        # SPIRE hands out the same cached JWT-SVID for the same audiences - so a second instance in this container would
-        # be refused. A second audience, this instance key's thumbprint, makes the SVID this instance's own.
-        svid = fetch_svid(spire, f"{audience},urn:ietf:params:oauth:jwk-thumbprint:sha-256:{jwk_thumbprint(public)}")
-        now = int(time.time())
-        proof = jwt.encode({"aud": audience, "jti": str(uuid.uuid4()), "iat": now, "exp": now + 60}, key, "ES256",
-                           headers={"typ": doc.get("instance_proof_typ", "oauth-attestation-instance-proof+jwt"),
-                                    "kid": public["kid"]})
-        r = requests.post(federation.reachable(doc["attestation_endpoint"]), timeout=20, verify=ca, json={
-            "client_id": client_id, "instance_key": public, "svid": svid, "proof": proof})
-        field, who = "attestation", "PingFederate's attester"
-    else:
-        raise RuntimeError(f"ATTESTER={ATTESTER}: pingfederate or provider")
+    issuer = issuer.rstrip("/")
+    doc = requests.get(federation.reachable(issuer + "/.well-known/client-attester"), timeout=15, verify=ca).json()
+    audience = doc.get("evidence_audience") or doc.get("pop_audience") or issuer
+    # The attester binds a piece of evidence to the first instance key it attests (instance_attestation_bound), and
+    # SPIRE hands out the same cached JWT-SVID for the same audiences - so a second instance in this container would
+    # be refused. A second audience, this instance key's thumbprint, makes the SVID this instance's own.
+    svid = fetch_svid(spire, f"{audience},urn:ietf:params:oauth:jwk-thumbprint:sha-256:{jwk_thumbprint(public)}")
+    now = int(time.time())
+    proof = jwt.encode({"aud": audience, "jti": str(uuid.uuid4()), "iat": now, "exp": now + 60}, key, "ES256",
+                       headers={"typ": doc.get("instance_proof_typ", "oauth-attestation-instance-proof+jwt"),
+                                "kid": public["kid"]})
+    r = requests.post(federation.reachable(doc["attestation_endpoint"]), timeout=20, verify=ca, json={
+        "client_id": client_id, "instance_key": public, "svid": svid, "proof": proof})
+    field, who = "attestation", "PingFederate's attester"
     if not r.ok:
         body = r.json() if r.headers.get("content-type", "").startswith("application/json") else {}
-        record("attest", attester=ATTESTER, status=r.status_code, error=body.get("error"))
+        record("attest", attester="pingfederate", status=r.status_code, error=body.get("error"))
         raise Refused("attest", f"{who} would not attest this copy: {r.status_code} {r.text[:300]}")
     attestation = r.json()[field]
     # PingFederate's attester (0.7.0) does not refuse a client_id the SVID is not bound to: it attests the SVID as
     # whichever client does bind it. Such an attestation is not for this agent, so the agent refuses it.
     claims = jwt.decode(attestation, options={"verify_signature": False})
     if claims.get("sub") != client_id:
-        record("attest", attester=ATTESTER, status=r.status_code, iss=claims.get("iss"), sub=claims.get("sub"),
+        record("attest", attester="pingfederate", status=r.status_code, iss=claims.get("iss"), sub=claims.get("sub"),
                spiffe_id=claims.get("spiffe_id"), error="not_this_client")
         raise Refused("attest", f"{who} attested this copy as {claims.get('sub')}, not as {client_id}: "
                                 f"SPIRE does not bind {claims.get('spiffe_id') or 'it'} to this agent")
@@ -354,7 +339,6 @@ def orchestrate(job: dict, agent: str, attestation: str, key, resolver, authorit
 
 def main() -> None:
     agent = os.environ["AGENT_ID"]
-    provider = os.environ["AGENT_PROVIDER"].rstrip("/")
     authority, anchor = os.environ["AUTHORITY"], os.environ["TRUST_ANCHOR"]
     job_id = sys.argv[1] if len(sys.argv) > 1 else os.environ.get("JOB", "list-accounts")
     job = JOBS[job_id]
@@ -372,17 +356,17 @@ def main() -> None:
     record("instance", kid=public["kid"])
 
     # 2. An attester vouches for this copy, on the strength of what SPIRE says it is.
-    attester_issuer = provider if ATTESTER == "provider" else (os.environ.get("AUTHORISATION_SERVER") or
-                      federation.find_authorisation_server(os.environ["DIRECTORY_URL"],
-                                                           os.environ.get("AUTHORISATION_SERVER_ID"))["Issuer"])
-    say("attest", f"attester: {ATTESTER} ({attester_issuer})")
-    attestation = attest(agent, key, public, provider, attester_issuer, ca)
+    attester_issuer = (os.environ.get("AUTHORISATION_SERVER") or
+                       federation.find_authorisation_server(os.environ["DIRECTORY_URL"],
+                                                            os.environ.get("AUTHORISATION_SERVER_ID"))["Issuer"])
+    say("attest", f"attester: PingFederate's ({attester_issuer})")
+    attestation = attest(agent, key, public, attester_issuer, ca)
     claims = jwt.decode(attestation, options={"verify_signature": False})
     spiffe_id = claims.get("spiffe_id") or claims.get("sub_spiffe_id") or (claims.get("workload") or {}).get("spiffe_id")
     say("attest", f"attested by {claims['iss']} as an instance of {claims['sub']} until {time.ctime(claims['exp'])}"
                   + (f" (SPIFFE ID {spiffe_id})" if spiffe_id else ""))
     record("attest", artefact=artefact(attestation))
-    record("attest", attester=ATTESTER, status=200, iss=claims["iss"], sub=claims["sub"], spiffe_id=spiffe_id,
+    record("attest", attester="pingfederate", status=200, iss=claims["iss"], sub=claims["sub"], spiffe_id=spiffe_id,
            cnf_kid=claims.get("cnf", {}).get("jwk", {}).get("kid"), kid=jwt.get_unverified_header(attestation).get("kid"),
            claims=sorted(claims))
 

@@ -48,7 +48,7 @@
       <div class="checklist">
         <label class="check">
           <input type="radio" name="kind" value="principal" checked>
-          <span class="role">Principal agent version, deployed at the agent provider</span>
+          <span class="role">Principal agent version, hosted by Raidiam</span>
           <span class="tag">live</span>
         </label>
         <label class="check">
@@ -58,9 +58,10 @@
         </label>
       </div>
       <p class="hint">
-        Approving a Principal version claims a slot at the provider (<code>…/agent/principal-N</code>), creates its
-        software statement in Raidiam, has the provider make CSRs for its keys and Raidiam certify them, grants its
-        roles, publishes its Entity Configuration and registers its SPIFFE ID with SPIRE. Needs a Raidiam session
+        Approving a Principal version creates its software statement in Raidiam, which hosts its Entity Configuration,
+        with its SPIFFE binding; creates its bridge key in the KMS (OpenBao) and has Raidiam certify the CSR the KMS makes;
+        grants its roles and registers its SPIFFE ID with SPIRE. PingFederate registers it from Raidiam at its first
+        token. Needs a Raidiam session
         (sign in, top right).
       </p>
     </div>

@@ -213,7 +213,7 @@ router.get(
 );
 router.get('/evidence/:id/verify', wrap(async (req, res) => res.json(await evidence.verify(req.params.id))));
 
-// Where the deployed version stands: hosted by the provider, vouched for by Raidiam, registered at PingFederate.
+// Where the deployed version stands: hosted and vouched for by Raidiam, registered by PingFederate at its first token.
 router.get(
   '/agents/:softwareId/status',
   wrap(async (req, res) => {

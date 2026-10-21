@@ -1,26 +1,29 @@
 """End-to-end harness for the agent-r flow (agent.py): checks that an agent is ready, runs it, and checks what it did.
 
-    python harness.py                      # the rig's agent, https://host.docker.internal:8443/agent/spire-client
+    python harness.py                      # the newest Principal version the marketplace deployed (Raidiam hosts it)
+    python harness.py --agent <entity id> --label <workload>   # a given one
     python harness.py --keep               # leave whatever it created (the SPIRE entry) in place
     python harness.py --report out.json    # also write the report as JSON
     python harness.py --brief              # one line per check (the default is verbose: each check's PoC objectives,
                                            # what it proves and its evidence, then the objectives' coverage)
-    python harness.py --attester provider  # the Principal attested by the agent provider's /attest, not PingFederate's
-                                           # attester (the default); the attesters stage runs the other one either way
+
+There is no agent provider. The Principal is a federation-managed entity Raidiam hosts; the sub-agents serve their own
+Entity Configurations; PingFederate's attester reads every agent's SPIFFE binding from Raidiam, and PingFederate
+registers each agent from Raidiam at its first attested token request.
 
 Stages, each a pass, a fail or a skip in the report:
 
-  preflight    PingFederate answers; the provider (entity-host), SPIRE's OIDC provider and the resource are up;
-               Raidiam vouches for the agent and its key; the provider serves the agent's Entity Configuration;
-               the agent's registration at PingFederate is current (else entity-host is restarted to renew it)
+  preflight    PingFederate answers; SPIRE's OIDC provider, the resources, the sub-agents and the gateways are up;
+               Raidiam hosts the agent's Entity Configuration and vouches for it, publishing its bridge key, with
+               capabilities; each sub-agent serves its own Entity Configuration
   spire        a SPIRE entry for the agent's SPIFFE ID, selecting containers by the label the agent runs under;
                created if missing (and removed afterwards, unless --keep)
   run          docker compose run agent <job>, under that label; its AGENT_RESULT line is what gets checked:
-               attested by the attester (--attester), for this agent and SPIFFE ID; the capability in its envelope;
+               attested by PingFederate's attester, for this agent and SPIFFE ID; the capability in its envelope;
                the resource chosen; a token for this agent with aud = the resource; the call allowed
-  attesters    why PingFederate trusts the attestation: its own attester's key in its Entity Configuration, Raidiam
-               vouching for PingFederate, the agents' SPIFFE bindings read from the provider's chain, no static
-               (mock) attesters; then the same job attested by the other attester
+  attesters    why PingFederate trusts the attestation and the agent: its own attester's key in its Entity
+               Configuration, Raidiam vouching for PingFederate, the agent's SPIFFE binding published by Raidiam and
+               read from there by the attester, no static (mock) attesters, and the agent registered from Raidiam
   negatives    another workload's container is refused attestation as the agent; a job outside the envelope is refused
                before a request is built; the resource refuses a call with no token
   gateway      with the agent's own token (probe.py): a forged token is refused at the gateway; the PDP permits
@@ -31,9 +34,8 @@ Stages, each a pass, a fail or a skip in the report:
   signals      Shared Signals (PROBE=ssf): session-revoked refuses the agent's existing token at the gateway but not a
                new one; account-disabled refuses every token; account-enabled lifts it - each within seconds
 
-Standard library only; it shells out to docker and docker compose, and runs in-network checks inside the provider's
-container. The provisioning stages - an agent registered through the marketplace, its keys certified, the provider
-hosting it - come later (see ../raidiam/README.md, "The test harness").
+Standard library only; it shells out to docker and docker compose, and runs in-network checks inside the Accounts
+agent's container. Deploying the Principal is the marketplace's (http://localhost:3000), which this reads.
 """
 import argparse
 import base64
@@ -68,9 +70,9 @@ def compose(*args, timeout=600, env=None) -> subprocess.CompletedProcess:
 
 
 def in_network(code: str) -> str:
-    """Python run inside the provider's container, which reaches everything in the rig by its internal name and
+    """Python run inside the Accounts agent's container, which reaches everything in the rig by its internal name and
     trusts the rig's CA (the host's TLS interception can get in the way of the host's own calls)."""
-    out = compose("exec", "-T", "entity-host", "python", "-c", code, timeout=120)
+    out = compose("exec", "-T", "accounts-agent", "python", "-c", code, timeout=120)
     if out.returncode:
         raise RuntimeError(out.stderr.strip().splitlines()[-1] if out.stderr.strip() else f"exit {out.returncode}")
     return out.stdout.strip()
@@ -84,6 +86,24 @@ def claims(jwt: str) -> dict:
 def raidiam_fetch(sub: str):
     with urllib.request.urlopen(f"{AUTHORITY}/fetch?sub={quote(sub, safe='')}", timeout=20) as r:
         return claims(r.read().decode())
+
+
+def get(url: str, accept: str = "*/*") -> str:
+    with urllib.request.urlopen(urllib.request.Request(url, headers={"Accept": accept}), timeout=20) as r:
+        return r.read().decode()
+
+
+def deployed_principal(marketplace: str) -> dict:
+    """The newest Principal version the marketplace deployed and Raidiam vouches for: its deploy record."""
+    with urllib.request.urlopen(f"{marketplace}/api/agents?status=approved", timeout=20) as r:
+        agents = json.load(r)["agents"]
+    ready = [x for x in agents if x.get("kind") == "principal" and (x.get("deploy") or {}).get("hosted")
+             and str((x.get("deploy") or {}).get("entityId", "")).startswith("https://rp.")]
+    ready.sort(key=lambda x: x.get("updatedAt") or "", reverse=True)
+    if not ready:
+        raise SystemExit("harness: no Principal version Raidiam hosts is deployed - deploy one in the marketplace, "
+                         "or name one with --agent and --label")
+    return ready[0]["deploy"]
 
 
 class Report:
@@ -177,13 +197,12 @@ def preflight(rep: Report, a) -> bool:
         for row in item if isinstance(item, list) else [item]:
             if row.get("State") == "running":
                 running.add(row.get("Service"))
-    # gateway-provider is https://host.docker.internal:8443 - the provider and its agents. Freeing 8443 for something
-    # else stops it, and with it every agent's configuration, /attest and the sub-agents' MCP.
-    for svc in ("entity-host", "spire-oidc", "rs-accounts", "rs-payments", "accounts-agent", "payments-agent",
-                "gateway", "gateway-payments", "gateway-provider", "coaz-pep", "pingauthorize"):
+    # gateway-agents is https://host.docker.internal:8443: the sub-agents' identities and MCP. There is no entity-host.
+    for svc in ("spire-oidc", "rs-accounts", "rs-payments", "accounts-agent", "payments-agent",
+                "gateway", "gateway-payments", "gateway-agents", "coaz-pep", "pingauthorize"):
         rep.expect("preflight", f"{svc} is running", svc in running,
                    "" if svc in running else f"docker compose up -d {svc}")
-    if "entity-host" not in running:
+    if "accounts-agent" not in running:
         return False
 
     try:
@@ -196,48 +215,36 @@ def preflight(rep: Report, a) -> bool:
         return False
 
     try:
+        ec = claims(get(a.agent + "/.well-known/openid-federation", "application/entity-statement+jwt").strip())
+        rp = (ec.get("metadata") or {}).get("openid_relying_party") or {}
+        rep.expect("preflight", "Raidiam hosts the agent's Entity Configuration",
+                   ec.get("iss") == a.agent and AUTHORITY in (ec.get("authority_hints") or []),
+                   f"iss {ec.get('iss')}, authority_hints {ec.get('authority_hints')}, client_registration_types "
+                   f"{rp.get('client_registration_types')}")
+        keys = json.loads(get(rp["jwks_uri"], "application/json")).get("keys", []) if rp.get("jwks_uri") else (rp.get("jwks") or {}).get("keys", [])
         statement = raidiam_fetch(a.agent)
-        with open(os.path.join(DEMO, "keys/raidiam/attested-client/entity.public.jwks.json")) as f:
-            mine = json.load(f)["keys"][0]["n"]
-        vouched = any(k.get("n") == mine for k in statement.get("jwks", {}).get("keys", []))
-        rep.expect("preflight", "Raidiam vouches for the agent's entity key", vouched,
-                   f"statement from {statement['iss'].rsplit('/', 1)[-1]}, exp {time.ctime(statement['exp'])}")
+        rep.expect("preflight", "Raidiam vouches for the agent and publishes its bridge key",
+                   statement.get("sub") == a.agent and any(k.get("x5c") for k in keys),
+                   f"statement from {statement['iss'].rsplit('/', 1)[-1]}, exp {time.ctime(statement['exp'])}; "
+                   f"{sum(bool(k.get('x5c')) for k in keys)} certified key(s) at {rp.get('jwks_uri', 'jwks')}")
         types = (statement.get("metadata_policy", {}).get("openid_relying_party", {})
                  .get("authorization_details_types", {}).get("value") or [])
         rep.add("preflight", "Raidiam grants the agent capabilities", "pass" if types else "fail",
                 f"{types}" if types else "none - grant the agent a role carrying them (e.g. cba.accounts.reader)")
     except Exception as e:
-        rep.expect("preflight", "Raidiam vouches for the agent", False, str(e))
+        rep.expect("preflight", "Raidiam hosts and vouches for the agent", False, str(e))
 
-    try:
-        out = in_network(
-            "import requests,os,base64,json;t=requests.get('" + a.agent + "/.well-known/openid-federation',"
-            "verify=os.environ['PF_CA_FILE']).text;p=t.split('.')[1];p+='='*(-len(p)%4);"
-            "print(json.loads(base64.urlsafe_b64decode(p))['iss'])")
-        rep.expect("preflight", "the provider serves the agent's Entity Configuration", out == a.agent, out)
-    except Exception as e:
-        rep.expect("preflight", "the provider serves the agent's Entity Configuration", False, str(e))
-
-    rep.expect("preflight", "the agent is registered at PingFederate", registration_current(a), "")
+    for name in ("accounts-agent", "payments-agent"):
+        sub_agent = f"{a.origin}/agent/{name}"
+        try:
+            out = in_network(
+                "import requests,os,base64,json;t=requests.get('" + sub_agent + "/.well-known/openid-federation',"
+                "verify=os.environ['PF_CA_FILE']).text;p=t.split('.')[1];p+='='*(-len(p)%4);"
+                "print(json.loads(base64.urlsafe_b64decode(p))['iss'])")
+            rep.expect("preflight", f"the {name} serves its own Entity Configuration", out == sub_agent, out)
+        except Exception as e:
+            rep.expect("preflight", f"the {name} serves its own Entity Configuration", False, str(e))
     return not rep.failed or all(r["check"] == "Raidiam grants the agent capabilities" for r in rep.failed)
-
-
-def registration_current(a) -> bool:
-    """The provider's last registration of the agent, still in force; else entity-host is restarted to renew it
-    (a restart of PingFederate drops every explicit registration)."""
-    def last_expiry():
-        logs = compose("logs", "--no-log-prefix", "entity-host").stdout
-        hits = re.findall(rf"registered {re.escape(a.agent)} at \S+ until (\d+)", logs)
-        return int(hits[-1]) if hits else 0
-
-    if last_expiry() > time.time() + 60:
-        return True
-    compose("restart", "entity-host")
-    for _ in range(12):
-        time.sleep(5)
-        if last_expiry() > time.time() + 60:
-            return True
-    return False
 
 
 def spire_entry(rep: Report, a) -> bool:
@@ -258,10 +265,9 @@ def spire_entry(rep: Report, a) -> bool:
     return ok
 
 
-def run_agent(a, job: str, label: str, attester: str = None) -> dict:
+def run_agent(a, job: str, label: str) -> dict:
     out = compose("run", "--rm", "-l", f"app={label}", "agent", job,
-                  env={"ATTESTED_CLIENT_ID": a.agent, "RAIDIAM_PROVIDER_ID": a.provider, "RAIDIAM_RESOURCE_ID": a.resource,
-                       "ATTESTER": attester or a.attester})
+                  env={"ATTESTED_CLIENT_ID": a.agent, "RAIDIAM_RESOURCE_ID": a.resource})
     line = next((l for l in reversed(out.stdout.splitlines()) if l.startswith("AGENT_RESULT ")), None)
     if not line:
         tail = (out.stdout + out.stderr).strip().splitlines()[-5:]
@@ -276,7 +282,7 @@ def run(rep: Report, a) -> dict:
     rep.expect("run", "the run completed", r.get("outcome") == "ok",
                r.get("reason") or "" if r.get("outcome") != "ok" else "")
     att = s.get("attest", {})
-    rep.expect("run", f"attested by {attester_name(a.attester)}", att.get("iss") == attester_issuer(a, a.attester),
+    rep.expect("run", "attested by PingFederate's attester", att.get("iss") == a.issuer,
                f"iss {att.get('iss')}, signing key {att.get('kid')}")
     rep.expect("run", "attested as this agent", att.get("sub") == a.agent, f"sub {att.get('sub')}")
     rep.expect("run", "SPIRE identified the container", att.get("spiffe_id") == a.spiffe_id, f"{att.get('spiffe_id')}")
@@ -300,19 +306,11 @@ def run(rep: Report, a) -> dict:
     return r
 
 
-def attester_name(attester: str) -> str:
-    return "the provider" if attester == "provider" else "PingFederate's attester"
-
-
-def attester_issuer(a, attester: str) -> str:
-    return a.provider if attester == "provider" else a.issuer
-
-
 def attesters(rep: Report, a, result: dict):
-    """Why PingFederate's token endpoint trusted the attestation: PingFederate's own attester is an OpenID Federation
-    entity like any other - its key in PingFederate's Entity Configuration, PingFederate in Raidiam's federation, the
-    agents' SPIFFE bindings read from the provider's chain - and nothing is trusted statically. Then the same job,
-    attested by the other attester."""
+    """Why PingFederate's token endpoint trusted the attestation and the agent: PingFederate's own attester is an OpenID
+    Federation entity like any other - its key in PingFederate's Entity Configuration, PingFederate in Raidiam's
+    federation - the agent's SPIFFE binding is Raidiam's word, read from there, nothing is trusted statically, and
+    PingFederate registered the agent from Raidiam on its verified attestation."""
     rep.stage("attesters")
     att = (result or {}).get("steps", {}).get("attest", {})
     try:
@@ -321,10 +319,8 @@ def attesters(rep: Report, a, result: dict):
             "verify=os.environ['PF_CA_FILE']).text;p=t.split('.')[1];p+='='*(-len(p)%4);c=json.loads(base64.urlsafe_b64decode(p));"
             "print(json.dumps([k.get('kid') for k in c.get('metadata',{}).get('oauth_client_attester',{}).get('jwks',{}).get('keys',[])]))")
         kids = json.loads(out)
-        signed = att.get("kid") in kids if a.attester != "provider" else bool(kids)
         rep.expect("attesters", "PingFederate publishes its attester key in its Entity Configuration (oauth_client_attester)",
-                   signed, f"kids {kids}" + (f"; the run's attestation was signed with {att.get('kid')}"
-                                             if a.attester != "provider" else ""))
+                   att.get("kid") in kids, f"kids {kids}; the run's attestation was signed with {att.get('kid')}")
     except Exception as e:
         rep.expect("attesters", "PingFederate publishes its attester key in its Entity Configuration (oauth_client_attester)",
                    False, str(e))
@@ -337,30 +333,37 @@ def attesters(rep: Report, a, result: dict):
         rep.expect("attesters", "Raidiam vouches for PingFederate, so its attester's key resolves through the federation",
                    False, str(e))
     try:
-        out = in_network(
-            "import requests,os,base64,json;t=requests.get('" + a.provider + "/.well-known/openid-federation',"
-            "verify=os.environ['PF_CA_FILE']).text;p=t.split('.')[1];p+='='*(-len(p)%4);c=json.loads(base64.urlsafe_b64decode(p));"
-            "print(json.dumps([[b['client_id'],b['spiffe_id'],b['issuer']] for b in c.get('spiffe_client_bindings',[])]))")
-        bindings = json.loads(out)
-        mine = [b for b in bindings if b[0] == a.agent and b[1] == a.spiffe_id and b[2] == a.issuer]
-        rep.expect("attesters", "the provider binds the agents' SPIFFE IDs for PingFederate's attester",
-                   bool(mine), f"{len(bindings)} binding(s): " + ", ".join(f"{b[1]} -> {b[0].rsplit('/', 1)[-1]}"
-                                                                           for b in bindings))
+        rp = raidiam_fetch(a.agent).get("metadata_policy", {}).get("openid_relying_party", {})
+        value = lambda m: (rp.get(m) or {}).get("value")
+        attesters_named = value("client_attesters") or []
+        rep.expect("attesters", "Raidiam binds the agent's SPIFFE ID for PingFederate's attester",
+                   value("spiffe_id") == a.spiffe_id and a.issuer in attesters_named,
+                   f"spiffe_id {value('spiffe_id')}, bundle {value('spiffe_bundle_endpoint')}, attesters {attesters_named}")
     except Exception as e:
-        rep.expect("attesters", "the provider binds the agents' SPIFFE IDs for PingFederate's attester", False, str(e))
+        rep.expect("attesters", "Raidiam binds the agent's SPIFFE ID for PingFederate's attester", False, str(e))
+    try:
+        out = in_network(
+            "import requests,os,json;d=requests.get('https://host.docker.internal:9031/.well-known/client-attester',"
+            "verify=os.environ['PF_CA_FILE']).json();print(json.dumps(d.get('resolver_plugins_active')))")
+        active = json.loads(out) or []
+        rep.expect("attesters", "PingFederate's attester reads the bindings from Raidiam (openid-federation-authority)",
+                   bool(active) and active[0] == "openid-federation-authority" and "openid-federation" not in active,
+                   f"resolver plugins, in order: {active}")
+    except Exception as e:
+        rep.expect("attesters", "PingFederate's attester reads the bindings from Raidiam (openid-federation-authority)",
+                   False, str(e))
     inspect = sh("docker", "inspect", a.pf_container, "--format",
                  "{{range .Config.Env}}{{println .}}{{end}}{{range .Mounts}}{{println .Destination}}{{end}}")
     rep.expect("attesters", "PingFederate trusts no static attesters (no oidf.mock.attesters)",
                inspect.returncode == 0 and "mock" not in inspect.stdout.lower(),
                "every attester is trusted through its federation chain" if inspect.returncode == 0
                else inspect.stderr.strip()[-120:])
-
-    other = "provider" if a.attester != "provider" else "pingfederate"
-    r = run_agent(a, a.job, a.label, attester=other)
-    o = r.get("steps", {}).get("attest", {})
-    rep.expect("attesters", f"the same job attested by {attester_name(other)} instead is trusted too",
-               r.get("outcome") == "ok" and o.get("iss") == attester_issuer(a, other),
-               f"iss {o.get('iss')}: {r.get('outcome')}" + (f" - {r.get('reason')}"[:120] if r.get("reason") else ""))
+    registered = sh("docker", "exec", a.pf_container, "sh", "-c",
+                    f"grep -h 'registered {a.agent} from the federation' /opt/out/instance/log/server.log | tail -1")
+    line = registered.stdout.strip()
+    rep.expect("attesters", "PingFederate registered the agent from Raidiam on its verified attestation",
+               bool(line), line[:23] + " " + line[line.find("attest_jwt_client_auth"):][:120] if line
+               else "no registration in PingFederate's log")
 
 
 def negatives(rep: Report, a):
@@ -389,7 +392,7 @@ def gateway(rep: Report, a):
     """The gateway in front of the resource, and the PDP behind it, probed with the agent's own token (probe.py)."""
     rep.stage("gateway")
     out = compose("run", "--rm", "-l", f"app={a.label}", "--entrypoint", "python", "agent", "probe.py",
-                  env={"ATTESTED_CLIENT_ID": a.agent, "RAIDIAM_PROVIDER_ID": a.provider, "RAIDIAM_RESOURCE_ID": a.resource})
+                  env={"ATTESTED_CLIENT_ID": a.agent, "RAIDIAM_RESOURCE_ID": a.resource})
     probes = {}
     for line in out.stdout.splitlines():
         if line.startswith("PROBE "):
@@ -436,7 +439,7 @@ def signals(rep: Report, a):
                           "--entrypoint", "python", "agent", "probe.py"], cwd=HERE, capture_output=True, text=True,
                          encoding="utf-8", errors="replace", timeout=600,
                          env={**ENV, "EMIT_SECRET": secret, "ATTESTED_CLIENT_ID": a.agent,
-                              "RAIDIAM_PROVIDER_ID": a.provider, "RAIDIAM_RESOURCE_ID": a.resource})
+                              "RAIDIAM_RESOURCE_ID": a.resource})
     line = next((l for l in out.stdout.splitlines() if l.startswith("PROBE ")), None)
     if not line:
         rep.expect("signals", "the probe ran", False, " | ".join((out.stdout + out.stderr).strip().splitlines()[-3:]))
@@ -468,8 +471,7 @@ def a2a(rep: Report, a):
     federation, each acting for the Principal by token exchange - then an over-limit invoice, then the Payments agent
     disabled by a signal while the Accounts agent carries on."""
     rep.stage("a2a", "agents calling agents")
-    provider = a.provider.rstrip("/")
-    accounts_agent, payments_agent = f"{provider}/agent/accounts-agent", f"{provider}/agent/payments-agent"
+    accounts_agent, payments_agent = f"{a.origin}/agent/accounts-agent", f"{a.origin}/agent/payments-agent"
     r = run_agent(a, "pay-invoice", a.label)
     s = r.get("steps", {})
     rep.expect("a2a", "pay-invoice completed", r.get("outcome") == "ok", r.get("reason") or "")
@@ -498,7 +500,7 @@ def a2a(rep: Report, a):
     over = subprocess.run(["docker", "compose", "run", "--rm", "-l", f"app={a.label}", "-e", "INVOICE_AMOUNT=1500",
                            "agent", "pay-invoice"], cwd=HERE, capture_output=True, text=True, encoding="utf-8",
                           errors="replace", timeout=600,
-                          env={**ENV, "ATTESTED_CLIENT_ID": a.agent, "RAIDIAM_PROVIDER_ID": a.provider})
+                          env={**ENV, "ATTESTED_CLIENT_ID": a.agent})
     line = next((l for l in reversed(over.stdout.splitlines()) if l.startswith("AGENT_RESULT ")), "AGENT_RESULT {}")
     o = json.loads(line[len("AGENT_RESULT "):])
     rep.expect("a2a", "an invoice over the policy's limit is refused at the Payments agent (PingAuthorize)",
@@ -516,8 +518,7 @@ def a2a(rep: Report, a):
                               "agent", "probe.py"], cwd=HERE, capture_output=True, text=True, encoding="utf-8",
                              errors="replace", timeout=300,
                              env={**ENV, "EMIT_SECRET": secret, "EMIT_SUB": payments_agent, "ATTESTED_CLIENT_ID": a.agent,
-                                  "EMIT_EVENT": "https://schemas.openid.net/secevent/risc/event-type/" + event,
-                                  "RAIDIAM_PROVIDER_ID": a.provider})
+                                  "EMIT_EVENT": "https://schemas.openid.net/secevent/risc/event-type/" + event})
         return '"streams": 1' in out.stdout or '"streams": 2' in out.stdout
 
     try:
@@ -564,16 +565,15 @@ def cleanup(a):
 
 def main():
     p = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
-    p.add_argument("--agent", default="https://host.docker.internal:8443/agent/spire-client")
-    p.add_argument("--provider", default="https://host.docker.internal:8443")
+    p.add_argument("--agent", help="the Principal's entity id (default: the newest version the marketplace deployed)")
+    p.add_argument("--marketplace", default="http://localhost:3000")
+    p.add_argument("--origin", default="https://host.docker.internal:8443", help="where the sub-agents are served")
     p.add_argument("--issuer", default="https://bottle-platonic-parted.ngrok-free.dev", help="PingFederate's issuer")
-    p.add_argument("--attester", choices=["pingfederate", "provider"], default="pingfederate",
-                   help="who attests the Principal: PingFederate's attester or the agent provider")
     p.add_argument("--pf-container", default="pf-agentic-identity")
     p.add_argument("--resource", default="https://host.docker.internal:8446")
     p.add_argument("--payments", default="https://host.docker.internal:8447", help="rs-payments' identifier")
-    p.add_argument("--label", default="spire-client", help="the docker label app=<label> the agent runs under")
-    p.add_argument("--spiffe-id", default="spiffe://example.org/spire-client")
+    p.add_argument("--label", help="the docker label app=<label> the agent runs under (its deploy's workload)")
+    p.add_argument("--spiffe-id", help="default spiffe://example.org/<label>")
     p.add_argument("--other-label", default="my-workload", help="another workload's label, for the negative test")
     p.add_argument("--job", default="list-accounts")
     p.add_argument("--spire-server", default="spire-spire-server-1")
@@ -586,10 +586,16 @@ def main():
     p.add_argument("--brief", action="store_true", help="one line per check, no objectives, explanations or evidence")
     a = p.parse_args()
     a.created = []
-    ENV["ATTESTER"] = a.attester  # every agent and probe run
+    a.origin = a.origin.rstrip("/")
+    if not a.agent:
+        d = deployed_principal(a.marketplace)
+        a.agent, a.label, a.spiffe_id = d["entityId"], a.label or d["slot"], a.spiffe_id or d["spiffeId"]
+    if not a.label:
+        raise SystemExit("harness: --agent needs --label, the workload it runs as")
+    a.spiffe_id = a.spiffe_id or f"spiffe://example.org/{a.label}"
 
     rep = Report(verbose=not a.brief)
-    print(f"harness: {a.agent} ({a.spiffe_id}), job {a.job}, attested by {attester_name(a.attester)}", flush=True)
+    print(f"harness: {a.agent} ({a.spiffe_id}), job {a.job}, attested by PingFederate's attester", flush=True)
     started = a.started = time.time()
     result = None
     try:
@@ -613,7 +619,7 @@ def main():
     if a.report:
         os.makedirs(os.path.dirname(os.path.abspath(a.report)), exist_ok=True)
         with open(a.report, "w") as f:
-            json.dump({"agent": a.agent, "job": a.job, "attester": a.attester, "at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+            json.dump({"agent": a.agent, "job": a.job, "attester": "pingfederate", "at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
                        "checks": rep.rows, "objectives": rep.coverage(), "agent_result": result}, f, indent=2)
     sys.exit(1 if rep.failed else 0)
 

@@ -3,25 +3,31 @@
 const config = require('./config');
 const raidiam = require('./raidiam');
 const rig = require('./rig');
+const vault = require('./vault');
 
 /**
- * Deploying a Principal version: the marketplace's control plane work done for real, end to end.
+ * Deploying a Principal version: the marketplace's control plane work done for real, end to end - with no agent
+ * provider. Raidiam hosts the version's identity, the KMS holds its one key, and PingFederate registers it itself.
  *
- *   1. slot          the provider claims a Principal slot: <provider>/agent/<slot>, spiffe://<td>/<slot>
- *   2. statement     Raidiam: POST /organisations/{org}/softwarestatements - self-managed OpenID Federation entity,
- *                    ClientId = the slot's identifier, related to PingFederate's authorisation server
- *   3. csr           the provider: a CSR for its entity key and one for its bridge key, for that statement (the
- *                    private keys never leave it)
- *   4. certificate   Raidiam: POST .../softwarestatements/{id}/certificates/rtssigning, once per CSR
+ *   1. statement     Raidiam: POST /organisations/{org}/softwarestatements - a federation-managed OpenID Federation
+ *                    entity: Raidiam hosts and signs its Entity Configuration, at its own identifier, with the keys it
+ *                    certified (jwks_uri) and automatic registration; related to PingFederate's authorisation server
+ *   2. spiffe        Raidiam: the statement's AdditionalSoftwareMetadata - its SPIFFE ID spiffe://<td>/<label>, the
+ *                    trust domain's bundle endpoint, and PingFederate as its attester - which Raidiam's authority
+ *                    publishes as value policies, and PingFederate's attester reads
+ *   3. bridge key    the KMS (OpenBao): bridge-<statement id>, created there and never exported; the vault makes its
+ *                    CSR and signs it
+ *   4. certificate   Raidiam: POST .../softwarestatements/{id}/certificates/rtssigning - the bridge key, which
+ *                    Raidiam then publishes for the version (its keystore, the Entity Configuration's jwks_uri)
  *   5. role          Raidiam: POST .../softwarestatements/{id}/authorityclaims, one per role, from the
  *                    organisation's own claims (GET /organisations/{org}/authorityclaims)
  *   6. verify        read back: the statement, its certificates, its claims
- *   7. host          the provider publishes its Entity Configuration and registers it at PingFederate
- *   8. spire         a SPIRE entry: spiffe://<td>/<slot> <- docker:label:app:<slot>
- *   9. trust         wait until Raidiam vouches for its keys and PingFederate has registered it
+ *   7. spire         a SPIRE entry: spiffe://<td>/<label> <- docker:label:app:<label>
+ *   8. trust         wait until Raidiam serves its Entity Configuration and vouches for it. PingFederate registers it
+ *                    at its first attested token request, from Raidiam - nobody registers it beforehand
  *
  * Each step's result is kept on the agent (its deploy field), so a deploy that stopped part way resumes where it
- * stopped rather than creating a second statement.
+ * stopped rather than creating a second statement. deploy.slot holds the version's workload label.
  */
 
 const now = () => new Date().toISOString();
@@ -70,26 +76,31 @@ function spiffeMetadata(spiffeId) {
   return JSON.stringify(members);
 }
 
-function statementBody(doc, d) {
+function statementBody(doc) {
+  const site = `${config.rig.agentsSite}/${encodeURIComponent(doc.softwareId)}`;
   return {
     ClientName: doc.name,
     Description: doc.description || `Principal agent version ${doc.version}, deployed by the agent marketplace`,
-    ClientId: d.entityId,
-    ClientUri: d.entityId,
+    ClientUri: site,
     LogoUri: 'https://data.directory.cba.raidiam.io/logos/placeholder-logo.png',
-    RedirectUri: [`${d.entityId}/callback`],
+    RedirectUri: [`${site}/callback`],
     Mode: 'Live',
     Environment: 'Sandbox',
     SoftwareVersion: String(doc.version || '1'),
-    AdditionalSoftwareMetadata: spiffeMetadata(d.spiffeId),
     OpenidFederationEnabled: true,
-    OpenidFederationEntityManagementType: 'openid_entity_self_managed',
+    OpenidFederationEntityManagementType: config.raidiam.federationManaged,
     RequireSignedRequestObject: false,
     IdTokenSignedResponseAlgorithm: 'PS256',
     TokenEndpointAuthMethod: 'private_key_jwt',
     TlsClientCertificateBoundAccessTokens: false,
     RelatedAuthorisationServer: doc.authorisationServerId || config.rig.authorisationServerId,
   };
+}
+
+/** The identifier Raidiam gives a federation-managed statement: its ClientId when that is one, else Raidiam's pattern. */
+function managedEntityId(statement, ssId) {
+  const id = statement.ClientId || '';
+  return /^https:\/\//.test(id) ? id.replace(/\/$/, '') : `${config.rig.managedEntityBase}/${ssId}`;
 }
 
 const P = config.raidiam.paths;
@@ -101,65 +112,65 @@ async function publish(doc, save) {
   const keep = async () => save({ deploy: d });
 
   try {
-    // 1. A slot at the provider.
-    if (!d.slot) {
-      const slot = await rig.provider('POST', '/admin/versions/claim', { name: doc.name, version: doc.version });
-      Object.assign(d, { slot: slot.slot, entityId: slot.entity_id, spiffeId: slot.spiffe_id });
-      add('statement', `the provider claimed slot ${d.slot} for ${doc.name} ${doc.version}: ${d.entityId}`);
-      await keep();
-    }
-
-    // 2. The software statement.
+    // 1. The software statement, federation-managed.
     if (!d.softwareStatementId) {
-      d.payload = statementBody(doc, d);
+      d.payload = statementBody(doc);
       const created = await raidiam.call('POST', P.softwareStatements, { orgId: org }, d.payload);
       d.softwareStatementId = created.SoftwareStatementId || created.softwareStatementId || created.id;
       if (!d.softwareStatementId) throw Object.assign(new Error('Raidiam answered with no SoftwareStatementId'), { body: created });
-      add('statement', `software statement ${d.softwareStatementId} in ${org}, client id ${d.entityId}`,
-        'self-managed OpenID Federation entity, private_key_jwt, related to PingFederate');
+      await keep();
+    }
+    if (!d.entityId) {
+      const back = await raidiam.call('GET', P.softwareStatement, { orgId: org, ssId: d.softwareStatementId });
+      d.entityId = managedEntityId(back, d.softwareStatementId);
+      d.slot = `agent-${d.softwareStatementId.slice(0, 8)}`;
+      d.spiffeId = `spiffe://${config.rig.trustDomain}/${d.slot}`;
+      add('statement', `software statement ${d.softwareStatementId} in ${org}: Raidiam hosts its Entity Configuration at ${d.entityId}`,
+        `${back.OpenidFederationEntityManagementType}, private_key_jwt, related to PingFederate`);
       await keep();
     }
 
-    // 3 + 4. CSRs from the provider, certified by Raidiam. Certificates already on the statement - uploaded in the
-    // Raidiam website, when the API refused - are found by their public key.
-    d.certificates = d.certificates || {};
-    if (!d.certificates.entity || !d.certificates.bridge) {
-      const mine = await rig.provider('GET', `/admin/versions/${d.slot}/keys`);
-      const certs = await raidiam.call('GET', `${P.softwareStatement}/certificates`, { orgId: org, ssId: d.softwareStatementId });
-      for (const name of ['entity', 'bridge']) {
-        const found = (certs || []).find((c) => c.Status === 'Active' && c.n === mine[name].n);
-        if (found && !d.certificates[name]) {
-          d.certificates[name] = { kid: found.kid };
-          add('certificate', `${name} key certified by Raidiam as ${found.keyType}, kid ${found.kid}`);
-        }
-      }
+    // 2. Its SPIFFE binding, on the statement.
+    if (!d.spiffeMetadata) {
+      const set = await setSpiffeMetadata(org, d.softwareStatementId, d.spiffeId);
+      if (!set.matches) throw Object.assign(new Error('Raidiam did not keep the SPIFFE metadata'), { body: set });
+      d.spiffeMetadata = true;
+      add('statement', `SPIFFE binding on the statement: ${d.spiffeId}, attested by PingFederate (${config.rig.pfIssuer})`,
+        set.additionalSoftwareMetadata);
       await keep();
     }
-    if (!d.certificates.entity || !d.certificates.bridge) {
-      const csrs = await rig.provider('POST', `/admin/versions/${d.slot}/csr`,
-        { softwareStatementId: d.softwareStatementId, organisationId: org });
-      d.csrs = csrs;
-      add('certificate', `the provider made CSRs for its entity key and its bridge key (CN=${d.softwareStatementId}); no private key leaves the provider - or, for a bridge key held in OpenBao, the vault`);
-      for (const name of ['entity', 'bridge']) {
-        if (d.certificates[name]) continue;
-        try {
-          const cert = await raidiam.call('POST', P.certificates,
-            { orgId: org, ssId: d.softwareStatementId, type: 'rtssigning' }, csrs[name], 'application/x-pem-file');
-          d.certificates[name] = { kid: cert.kid || cert.Kid || cert.CertificateOrKeyId || null };
-          add('certificate', `${name} key certified by Raidiam as rtssigning${d.certificates[name].kid ? `, kid ${d.certificates[name].kid}` : ''}`);
-          await keep();
-        } catch (err) {
-          if (err.status !== 403) throw err;
-          add('refused', `Raidiam's API refused to certify the ${name} key (403): upload its CSR in the Raidiam website instead - `
-            + `software statement ${d.softwareStatementId}, certificates, rtssigning - then approve again to carry on`,
-            describe(err));
-          d.awaitingUpload = true;
-        }
+
+    // 3 + 4. The bridge key, in the KMS, certified by Raidiam. A certificate already on the statement - uploaded in the
+    // Raidiam website, when the API refused - is found by its public key.
+    d.certificates = d.certificates || {};
+    if (!d.certificates.bridge) {
+      const mine = await vault.bridgeKey(d.softwareStatementId, true);
+      const certs = await raidiam.call('GET', `${P.softwareStatement}/certificates`, { orgId: org, ssId: d.softwareStatementId });
+      const found = (certs || []).find((c) => c.Status === 'Active' && c.n === mine.n);
+      if (found) {
+        d.certificates.bridge = { kid: found.kid };
+        add('certificate', `bridge key certified by Raidiam as ${found.keyType}, kid ${found.kid}`);
+        await keep();
       }
-      await keep();
-      if (!d.certificates.entity || !d.certificates.bridge) {
+    }
+    if (!d.certificates.bridge) {
+      d.csrs = { bridge: await vault.bridgeCsr(d.softwareStatementId, org) };
+      add('certificate', `the KMS created ${vault.keyName(d.softwareStatementId)} (rsa-2048, not exportable) and made its CSR `
+        + `(CN=${d.softwareStatementId}); the private key never leaves the KMS`);
+      try {
+        const cert = await raidiam.call('POST', P.certificates,
+          { orgId: org, ssId: d.softwareStatementId, type: 'rtssigning' }, d.csrs.bridge, 'application/x-pem-file');
+        d.certificates.bridge = { kid: cert.kid || cert.Kid || cert.CertificateOrKeyId || null };
+        add('certificate', `bridge key certified by Raidiam as rtssigning${d.certificates.bridge.kid ? `, kid ${d.certificates.bridge.kid}` : ''}`);
+      } catch (err) {
+        if (err.status !== 403) throw err;
+        add('refused', `Raidiam's API refused to certify the bridge key (403): upload its CSR in the Raidiam website instead - `
+          + `software statement ${d.softwareStatementId}, certificates, rtssigning - then approve again to carry on`, describe(err));
+        d.awaitingUpload = true;
+        await keep();
         return { ok: false, steps, deploy: d, awaitingUpload: true };
       }
+      await keep();
     }
     d.awaitingUpload = false;
 
@@ -196,35 +207,28 @@ async function publish(doc, save) {
     const certs = await raidiam.call('GET', `${P.softwareStatement}/certificates`, { orgId: org, ssId: d.softwareStatementId });
     const claims = await raidiam.call('GET', P.authorityClaims, { orgId: org, ssId: d.softwareStatementId });
     const active = (claims || []).filter((c) => c.Status === 'Active').map((c) => c.Role);
-    add('verify', `read back: ${back.ClientName} is ${back.Status}, client id ${back.ClientId}`);
+    add('verify', `read back: ${back.ClientName} is ${back.Status}, ${back.OpenidFederationEntityManagementType}`);
     add('verify', `read back: ${(certs || []).filter((c) => c.Status === 'Active').length} active rtssigning certificate(s); roles ${active.join(', ') || 'none'}`);
     d.rolesActive = active;
 
-    // 7. Hosted by the provider.
-    if (!d.hosted) {
-      await rig.provider('POST', `/admin/versions/${d.slot}/host`, { name: doc.name });
-      d.hosted = true;
-      add('verify', `the provider publishes its Entity Configuration at ${d.entityId}/.well-known/openid-federation, binding ${d.spiffeId} for PingFederate's attester`);
-      await keep();
-    }
-
-    // 8. Its workload identity.
+    // 7. Its workload identity.
     if (!d.spire) {
       d.spire = await rig.spireEntry(d.spiffeId, d.slot);
       add('verify', `SPIRE entry ${d.spiffeId} <- docker:label:app:${d.slot} (${d.spire})`);
       await keep();
     }
 
-    // 9. Trust established: Raidiam vouches for its keys, PingFederate has registered it.
-    const status = await waitForTrust(d.slot);
-    d.trust = status;
-    add(status.raidiam?.vouches ? 'verify' : 'refused',
-      status.raidiam?.vouches ? `Raidiam vouches for its entity key (kid ${status.raidiam.kids.entity})`
-        : `Raidiam does not vouch for its keys yet: ${status.raidiam?.error || 'not in the authority statement'}`);
-    add(status.pingfederate?.registered_until ? 'verify' : 'refused',
-      status.pingfederate?.registered_until
-        ? `registered at PingFederate until ${new Date(status.pingfederate.registered_until * 1000).toISOString()}`
-        : `not registered at PingFederate yet: ${status.pingfederate?.error || 'pending'} - the provider retries every 30 s`);
+    // 8. Trust established: Raidiam serves its Entity Configuration and vouches for it, with its bridge key.
+    const st = await waitForTrust(d);
+    d.trust = st;
+    d.hosted = Boolean(st.raidiam.vouches);
+    add(st.raidiam.served ? 'verify' : 'refused', st.raidiam.served
+      ? `Raidiam serves its Entity Configuration at ${d.entityId}/.well-known/openid-federation`
+      : `Raidiam does not serve its Entity Configuration yet: ${st.raidiam.error || 'pending'}`);
+    add(st.raidiam.vouches ? 'verify' : 'refused', st.raidiam.vouches
+      ? `Raidiam vouches for it, publishing its bridge key (kid ${st.raidiam.kids.bridge})`
+      : `Raidiam does not vouch for it yet: ${st.raidiam.error || 'its bridge key is not published'}`);
+    add('verify', 'PingFederate registers it from Raidiam at its first attested token request - nobody registers it beforehand');
     await keep();
     return { ok: true, steps, deploy: d };
   } catch (err) {
@@ -234,15 +238,47 @@ async function publish(doc, save) {
   }
 }
 
-async function waitForTrust(slot, limitMs = 120000) {
-  const start = Date.now();
-  let status = {};
-  while (Date.now() - start < limitMs) {
-    status = await rig.provider('GET', `/admin/versions/${slot}/status`).catch((e) => ({ error: e.message }));
-    if (status.raidiam?.vouches && status.pingfederate?.registered_until) return status;
-    await sleep(5000);
+const decode = (jwt) => JSON.parse(Buffer.from(jwt.split('.')[1], 'base64url').toString('utf8'));
+
+/**
+ * Where the version stands, asked of the parties themselves: Raidiam (its Entity Configuration, the authority's statement
+ * about it, its bridge key among the keys that configuration names) and PingFederate (its log: registered from the
+ * federation on a verified attestation).
+ */
+async function trust(d) {
+  const raidiamSide = { served: false, vouches: false, kids: {} };
+  try {
+    const ec = await fetch(`${d.entityId}/.well-known/openid-federation`, { signal: AbortSignal.timeout(15000) });
+    if (!ec.ok) throw new Error(`its Entity Configuration answers ${ec.status}`);
+    const conf = decode((await ec.text()).trim());
+    raidiamSide.served = conf.iss === d.entityId;
+    const authority = (process.env.AGENT_ENV_AUTHORITY || '').replace(/\/$/, '');
+    const statement = await fetch(`${authority}/fetch?sub=${encodeURIComponent(d.entityId)}`, { signal: AbortSignal.timeout(15000) });
+    if (!statement.ok) throw new Error(`the authority answers ${statement.status} for it`);
+    const rp = (conf.metadata || {}).openid_relying_party || {};
+    const jwks = rp.jwks || (rp.jwks_uri ? await (await fetch(rp.jwks_uri, { signal: AbortSignal.timeout(15000) })).json() : { keys: [] });
+    const bridge = await vault.bridgeKey(d.softwareStatementId);
+    const published = (jwks.keys || []).find((k) => bridge && k.n === bridge.n);
+    raidiamSide.kids.bridge = published ? published.kid : null;
+    raidiamSide.vouches = Boolean(published);
+    if (!published) raidiamSide.error = 'its bridge key is not among the keys Raidiam publishes for it yet';
+  } catch (err) {
+    raidiamSide.error = err.message;
   }
-  return status;
+  const log = await rig.docker(['exec', config.rig.pfContainer, 'sh', '-c',
+    `grep -h "registered ${d.entityId} from the federation" /opt/out/instance/log/server.log | tail -1`]).catch(() => null);
+  const line = ((log && log.stdout) || '').trim();
+  return { raidiam: raidiamSide, pingfederate: { registered: Boolean(line), at: line ? line.slice(0, 23) : null } };
+}
+
+async function waitForTrust(d, limitMs = 120000) {
+  const start = Date.now();
+  let st = await trust(d);
+  while (!st.raidiam.vouches && Date.now() - start < limitMs) {
+    await sleep(5000);
+    st = await trust(d);
+  }
+  return st;
 }
 
 async function setStatus(doc, status) {
@@ -254,7 +290,7 @@ async function setStatus(doc, status) {
     { ...current, Environment: current.Environment || 'Sandbox', Status: status });
 }
 
-/** Suspension: the statement Suspended, a Shared Signals account-disabled, the Entity Configuration withdrawn. */
+/** Suspension: the statement Suspended - Raidiam stops vouching for it - and a Shared Signals account-disabled. */
 async function suspend(doc) {
   const { steps, add } = recorder((doc.steps || []).length);
   const d = doc.deploy;
@@ -273,9 +309,6 @@ async function suspend(doc) {
   } catch (err) {
     add('refused', `signal not raised: ${err.message}`);
   }
-  await rig.provider('POST', `/admin/versions/${d.slot}/withdraw`).then(
-    () => add('verify', `the provider withdrew its Entity Configuration: its chain no longer resolves`),
-    (err) => add('refused', `withdrawal at the provider failed: ${err.message}`));
   return { ok: true, steps };
 }
 
@@ -290,9 +323,6 @@ async function reinstate(doc) {
     add('refused', `reinstatement refused at Raidiam: ${err.message}`, describe(err));
     return { ok: false, steps };
   }
-  await rig.provider('POST', `/admin/versions/${d.slot}/host`, { name: doc.name }).then(
-    () => add('verify', `the provider publishes its Entity Configuration again`),
-    (err) => add('refused', `hosting at the provider failed: ${err.message}`));
   try {
     const streams = await rig.emit('https://schemas.openid.net/secevent/risc/event-type/account-enabled', d.entityId);
     add('statement', `Shared Signals: account-enabled for ${d.entityId}, to ${streams} stream(s)`);
@@ -315,8 +345,8 @@ async function run(doc, job, options = {}) {
 
 async function status(doc) {
   const d = doc.deploy;
-  if (!d?.slot) return null;
-  return rig.provider('GET', `/admin/versions/${d.slot}/status`);
+  if (!d?.entityId) return null;
+  return { state: doc.status, ...(await trust(d)) };
 }
 
 /**
@@ -324,6 +354,17 @@ async function status(doc) {
  * published these members. The whole record is sent back with it, as Raidiam's update requires (a save without the
  * field resets it), and read back.
  */
+/** The same JSON, however it is spaced or ordered: Raidiam keeps the metadata re-serialised, its members reordered. */
+function sameJson(a, b) {
+  const sorted = (v) => (Array.isArray(v) ? v.map(sorted) : v && typeof v === 'object'
+    ? Object.fromEntries(Object.keys(v).sort().map((k) => [k, sorted(v[k])])) : v);
+  try {
+    return JSON.stringify(sorted(JSON.parse(a))) === JSON.stringify(sorted(JSON.parse(b)));
+  } catch (err) {
+    return false;
+  }
+}
+
 async function setSpiffeMetadata(orgId, ssId, spiffeId) {
   const current = await raidiam.call('GET', P.softwareStatement, { orgId, ssId });
   const metadata = spiffeMetadata(spiffeId);
@@ -331,7 +372,7 @@ async function setSpiffeMetadata(orgId, ssId, spiffeId) {
     { ...current, Environment: current.Environment || 'Sandbox', AdditionalSoftwareMetadata: metadata });
   const back = await raidiam.call('GET', P.softwareStatement, { orgId, ssId });
   return { softwareStatementId: ssId, clientId: back.ClientId, status: back.Status,
-    additionalSoftwareMetadata: back.AdditionalSoftwareMetadata, matches: back.AdditionalSoftwareMetadata === metadata };
+    additionalSoftwareMetadata: back.AdditionalSoftwareMetadata, matches: sameJson(back.AdditionalSoftwareMetadata, metadata) };
 }
 
 module.exports = { publish, suspend, reinstate, run, status, setSpiffeMetadata };

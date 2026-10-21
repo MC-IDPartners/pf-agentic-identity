@@ -6,7 +6,7 @@ FROM kong:3.7
 
 USER root
 COPY plugins/coaz-pep /usr/local/share/lua/5.1/kong/plugins/coaz-pep
-COPY kong.yml.template provider.yml.template /kong/
+COPY kong.yml.template agents.yml.template /kong/
 COPY docker-entrypoint.sh /custom-entrypoint.sh
 RUN chmod +x /custom-entrypoint.sh && mkdir -p /kong && chown -R kong /kong
 USER kong

@@ -20,7 +20,7 @@ async function main() {
   app.get('/healthz', (req, res) => res.json({ ok: true }));
 
   // Signing in to Raidiam (src/raidiam-auth.js). The redirect URI registered on the directory client is
-  // https://localhost:8443/cb: the agent provider's gateway (Kong) on 8443 passes /cb through to here.
+  // https://localhost:8443/cb: the agents' gateway (Kong) on 8443 passes /cb through to here.
   app.get('/auth/login', async (req, res, next) => {
     try {
       res.redirect(await auth.startLogin());

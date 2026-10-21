@@ -80,14 +80,9 @@ const SCENARIOS = [
     proves: 'a container SPIRE identifies as spiffe://example.org/my-workload gets no attestation as this version',
   },
   {
-    id: 'provider-attests', title: 'Attested by the agent provider instead', job: 'get-balance', attester: 'provider', when: 'approved',
-    expect: { outcome: 'ok' }, objectives: ['TC-12', 'TC-28'],
-    proves: 'the provider\'s /attest, trusted by PingFederate through the provider\'s chain - attestation is pluggable',
-  },
-  {
     id: 'while-suspended', title: 'Tries to act while suspended', job: 'get-balance', when: 'suspended',
     expect: { outcome: 'refused' }, objectives: ['TC-02', 'TC-04'],
-    proves: 'with its statement Suspended, its Entity Configuration withdrawn and account-disabled signalled, it cannot act',
+    proves: 'with its statement Suspended - Raidiam no longer vouches for it - and account-disabled signalled, it cannot act',
   },
 ];
 
@@ -95,15 +90,15 @@ const SCENARIOS = [
 const ACTIONS = {
   deploy: {
     objectives: ['TC-01', 'TC-05', 'TC-06', 'TC-07', 'TC-09', 'TC-10', 'TC-25', 'TC-26', 'TC-28'],
-    proves: 'approving it in the marketplace created its statement, certified CSRs from the provider (no private key left the provider), granted its roles, published its Entity Configuration, registered its SPIFFE ID, and PingFederate registered it through the federation',
+    proves: 'approving it in the marketplace created its statement, which Raidiam hosts, with its SPIFFE binding; created its bridge key in the KMS and had Raidiam certify its CSR (no private key left the KMS); granted its roles and registered its SPIFFE ID. PingFederate registers it from Raidiam at its first token',
   },
   suspend: {
     objectives: ['TC-02', 'TC-04', 'TC-05'],
-    proves: 'suspension set its statement Suspended in Raidiam, raised account-disabled, and withdrew its Entity Configuration',
+    proves: 'suspension set its statement Suspended in Raidiam, so Raidiam no longer vouches for it, and raised account-disabled',
   },
   reinstate: {
     objectives: ['TC-02', 'TC-05'],
-    proves: 'reinstatement returned its statement to Active and published its Entity Configuration again',
+    proves: 'reinstatement returned its statement to Active, so Raidiam vouches for it again, and raised account-enabled',
   },
 };
 

@@ -27,6 +27,9 @@ const config = {
     // every step is still written to the deployment log.
     mock: bool(process.env.RAIDIAM_MOCK, !process.env.RAIDIAM_CLIENT_ID),
 
+    // A Principal version's statement: federation-managed, so Raidiam hosts and signs its Entity Configuration.
+    federationManaged: process.env.RAIDIAM_FEDERATION_MANAGED || 'openid_entity_federation_managed',
+
     // authorization_code: an operator signs in (scope directory:website) - until Raidiam allows
     // directory:management for client_credentials, which needs no sign-in (src/raidiam-auth.js).
     grant: process.env.RAIDIAM_GRANT || 'authorization_code',
@@ -66,9 +69,16 @@ const config = {
     timeoutMs: Number(process.env.RAIDIAM_TIMEOUT_MS || 20000),
   },
 
-  // The rig around the marketplace (src/rig.js): the provider's admin API, SPIRE, the agent image, PingFederate.
+  // The rig around the marketplace (src/rig.js): the KMS, SPIRE, the agent image, PingFederate.
   rig: {
-    providerAdmin: process.env.PROVIDER_ADMIN_URL || 'http://entity-host:8091',
+    // Where Raidiam hosts a federation-managed relying party: <base>/<statement id>, when its ClientId does not say.
+    managedEntityBase: process.env.RAIDIAM_MANAGED_ENTITY_BASE || 'https://rp.directory.cba.raidiam.io/openid_relying_party',
+    // A version's page, for its statement's ClientUri and RedirectUri (Raidiam requires them; nothing redirects there).
+    agentsSite: process.env.AGENTS_SITE || 'https://host.docker.internal:8443/marketplace/agents',
+    trustDomain: process.env.TRUST_DOMAIN || 'example.org',
+    // The KMS (src/vault.js): OpenBao, and the enrolment token - create bridge keys and their CSRs, never sign.
+    openbaoAddr: process.env.OPENBAO_ADDR || 'http://openbao:8200',
+    openbaoTokenFile: process.env.OPENBAO_TOKEN_FILE || '/openbao/enrolment.token',
     authorisationServerId: process.env.AUTHORISATION_SERVER_ID || '9b0983ce-781e-4f58-8620-0a752aafa054',
     spireServer: process.env.SPIRE_SERVER_CONTAINER || 'spire-spire-server-1',
     spireParent: process.env.SPIRE_PARENT_ID || 'spiffe://example.org/spire/agent/x509pop/agent1',

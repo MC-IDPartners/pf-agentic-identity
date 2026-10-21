@@ -45,7 +45,8 @@ async function create(input, actor) {
   const doc = {
     softwareId,
     // 'principal': a Principal agent version the marketplace deploys for real - its statement, certificates and
-    // roles in Raidiam, hosted by the agent provider, a SPIRE entry (src/deploy.js). 'catalogue': the original
+    // roles in Raidiam, Raidiam hosting its Entity Configuration, its bridge key in the KMS, a SPIRE entry
+    // (src/deploy.js). 'catalogue': the original
     // registration only.
     kind: input.kind === 'principal' ? 'principal' : 'catalogue',
     name: input.name,

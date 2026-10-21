@@ -4,8 +4,9 @@ Objectives - FINAL", 10 July 2026), and how harness.py's checks evidence them.
 In the rig's terms: Raidiam is the Trust Controller (the federation's authority and anchor, publishing the Agent
 Identities' trust material - statements, keys, capability envelopes, trust marks); the agent marketplace is the Agent
 registry; PingFederate is the Identity-layer Client Representation; SPIRE is the Workload-layer Representation; Kong +
-coaz-pep is the gateway/PEP; PingAuthorize is the PDP; the agent provider (entity-host) hosts the agents' Entity
-Configurations; PingFederate's co-hosted attester, or the provider, attests their instances.
+coaz-pep is the gateway/PEP; PingAuthorize is the PDP. There is no agent provider: Raidiam hosts the Principal agents'
+Entity Configurations, the sub-agents serve their own, and PingFederate's co-hosted attester attests their instances on
+the SPIFFE bindings Raidiam publishes.
 """
 import re
 
@@ -59,15 +60,15 @@ OUT_OF_SCOPE = {
 }
 
 STAGES = {
-    "preflight": ("Is everything the trust flow depends on up, and does the Trust Controller (Raidiam) vouch for the "
-                  "agent - its keys and its capability envelope - and serve the provider its configuration?",
+    "preflight": ("Is everything the trust flow depends on up, and does the Trust Controller (Raidiam) host the agent's "
+                  "Entity Configuration and vouch for it - its key and its capability envelope?",
                   ["TC-05", "TC-09", "TC-10", "TC-21", "TC-26", "TC-27"]),
     "spire": ("The Workload-layer Representation: a SPIRE registration entry binding the agent's SPIFFE ID to the "
               "containers allowed to run it.", ["TC-28"]),
-    "attesters": ("Who attests the agent's instances, and why PingFederate trusts the attestation: PingFederate's own "
-                  "attester, an OpenID Federation entity like any other - its key in PingFederate's Entity Configuration, "
-                  "PingFederate in Raidiam's federation, the agents' SPIFFE bindings read through the provider's chain - or "
-                  "the agent provider's; each trusted only through its chain to the anchor, nothing statically.",
+    "attesters": ("Who attests the agent's instances, and why PingFederate trusts the attestation and the agent: "
+                  "PingFederate's own attester, an OpenID Federation entity like any other - its key in PingFederate's "
+                  "Entity Configuration, PingFederate in Raidiam's federation - the agent's SPIFFE binding published by "
+                  "Raidiam, nothing trusted statically, and the agent registered from Raidiam at its first token.",
                   ["TC-09", "TC-11", "TC-12", "TC-26", "TC-28"]),
     "run": ("The Principal acting as itself: attested on SPIRE's word, its envelope read from the Trust Controller, the "
             "resource found through the federation, a token bound to its instance, the call allowed after the trust "
@@ -88,20 +89,24 @@ CHECKS = [
     (r" is running$", ["TC-21", "TC-19"], "the component is up; the environment is rebuilt from compose and scripts"),
     (r"^PingFederate answers", ["TC-09", "TC-12"],
      "the existing authorisation server (PingFederate, with the OpenID Federation modules) is the token issuer"),
-    (r"^Raidiam vouches for the agent's entity key", ["TC-02", "TC-05", "TC-10", "TC-26"],
-     "the Trust Controller's signed statement publishes the agent's public key; the private key never leaves the "
-     "agent's owner - the Trust Controller holds none"),
+    (r"^Raidiam vouches for the agent and publishes its bridge key", ["TC-02", "TC-05", "TC-10", "TC-26"],
+     "the Trust Controller vouches for the agent and publishes the public key it certified; the private key never "
+     "leaves the KMS - the Trust Controller holds none"),
+    (r"^Raidiam hosts the agent's Entity Configuration", ["TC-05", "TC-11", "TC-01"],
+     "the Agent Identity is a standard OpenID Federation Entity Configuration, hosted and signed by the Trust "
+     "Controller itself - no agent provider"),
+    (r"serves its own Entity Configuration", ["TC-05", "TC-11"],
+     "an agent other agents call publishes its own federation identity, and its resource metadata, at its identifier"),
     (r"^Raidiam grants the agent capabilities", ["TC-02", "TC-27", "TC-08"],
      "the capability envelope comes from the Trust Controller (roles -> authorization_details_types), independent of "
      "OAuth scopes and of the client's runtime configuration"),
-    (r"^the provider serves the agent's Entity Configuration", ["TC-05", "TC-11"],
-     "the Agent Identity is published as a standard OpenID Federation Entity Configuration"),
-    (r"^the agent is registered at PingFederate", ["TC-09", "TC-10"],
+    (r"^PingFederate registered the agent from Raidiam", ["TC-09", "TC-10", "TC-01"],
      "the authorisation server's local client representation is built from the federation's trust material "
-     "(chain resolved and validated, policy applied), not configured by hand"),
+     "(chain resolved and validated, policy applied) at the agent's first attested token request - nobody registers "
+     "it by hand or ahead of time"),
     (r"^entry spiffe://", ["TC-28"], "the workload identity is registered programmatically (spire-server API)"),
     (r"^the run completed", ["TC-03"], "the whole token flow, trust checks included, ends in access"),
-    (r"^attested by (the provider|PingFederate's attester)", ["TC-28", "TC-26"],
+    (r"^attested by PingFederate's attester", ["TC-28", "TC-26"],
      "an attester vouches for this running instance on SPIRE's evidence, signing with a key its own Entity "
      "Configuration publishes and the Trust Controller's chain vouches for - no key of the agent's own is involved"),
     (r"^PingFederate publishes its attester key", ["TC-09", "TC-11", "TC-28"],
@@ -109,14 +114,14 @@ CHECKS = [
      "token endpoint included, verifies its attestations by resolving PingFederate's chain"),
     (r"^Raidiam vouches for PingFederate", ["TC-09", "TC-10", "TC-12"],
      "the existing authorisation server is a member of the Trust Controller's federation, its keys vouched for"),
-    (r"^the provider binds the agents", ["TC-28", "TC-10", "TC-25"],
-     "which workloads are instances of which agent is federation metadata; PingFederate's attester reads it only "
-     "through the provider's chain to the anchor - nothing configured in PingFederate per agent"),
+    (r"^Raidiam binds the agent's SPIFFE ID", ["TC-28", "TC-10", "TC-25"],
+     "which workload is an instance of which agent is the Trust Controller's word: its value policy on the agent, "
+     "which no entity can override - nothing configured in PingFederate per agent"),
+    (r"reads the bindings from Raidiam", ["TC-28", "TC-09", "TC-12"],
+     "PingFederate's attester takes its clients from the authority's statements, through each agent's chain to the "
+     "anchor - no provider or other entity publishes bindings for others"),
     (r"trusts no static attesters", ["TC-11", "TC-15"],
      "no development trust shortcut: every attester is trusted through the federation"),
-    (r"attested by .* instead is trusted too", ["TC-12", "TC-28"],
-     "attestation is pluggable - the enterprise authorisation server's attester or the agent provider's - both trusted "
-     "the same way"),
     (r"^attested as this agent", ["TC-28"], "the attested instance is bound to the Agent Identity's client"),
     (r"^SPIRE identified the container", ["TC-28"],
      "the SPIFFE ID comes from SPIRE's attestation of the container, not from anything the agent claims"),

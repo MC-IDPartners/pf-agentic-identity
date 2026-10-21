@@ -60,20 +60,19 @@ function principalPanels() {
   return `
     <hr class="rule">
     <div class="section-head">
-      <p class="eyebrow">At the provider</p>
+      <p class="eyebrow">In the federation</p>
       <div>
         <h2>Where this version stands</h2>
         <dl class="kv">
-          <dt>slot</dt><dd class="plain">${esc(d.slot || '— (claimed on approval)')}</dd>
+          <dt>workload</dt><dd class="plain">${esc(d.slot || '— (named on approval)')}</dd>
           <dt>entity id</dt><dd class="plain">${esc(d.entityId || '—')}</dd>
           <dt>SPIFFE ID</dt><dd class="plain">${esc(d.spiffeId || '—')}</dd>
         </dl>
-        ${d.awaitingUpload ? `<div class="notice">Raidiam's API would not certify the keys. Upload these CSRs in the Raidiam
+        ${d.awaitingUpload ? `<div class="notice">Raidiam's API would not certify the bridge key. Upload its CSR in the Raidiam
           website - software statement <code>${esc(d.softwareStatementId)}</code>, certificates, <strong>rtssigning</strong> - then
           approve again to carry on:
-          <a href="/api/agents/${encodeURIComponent(doc.softwareId)}/csr/entity">entity key CSR</a> ·
           <a href="/api/agents/${encodeURIComponent(doc.softwareId)}/csr/bridge">bridge key CSR</a></div>` : ''}
-        <div id="live-status" class="hint">${d.slot ? '<span class="spinner"></span>Asking the provider, Raidiam and PingFederate…' : ''}</div>
+        <div id="live-status" class="hint">${d.entityId ? '<span class="spinner"></span>Asking Raidiam and PingFederate…' : ''}</div>
       </div>
     </div>
     ${d.hosted || doc.status !== 'pending' ? `
@@ -120,18 +119,17 @@ function principalPanels() {
 
 async function liveStatus() {
   const box = document.getElementById('live-status');
-  if (!box || !(doc.deploy || {}).slot) return;
+  if (!box || !(doc.deploy || {}).entityId) return;
   try {
     const st = await api.get(`/agents/${encodeURIComponent(softwareId)}/status`);
     const pf = st.pingfederate || {};
     const rd = st.raidiam || {};
     box.innerHTML = `<dl class="kv">
-      <dt>provider</dt><dd>${st.hosted ? 'publishes its Entity Configuration' : esc(st.state)}</dd>
-      <dt>Raidiam</dt><dd>${rd.vouches ? `vouches for its keys (entity ${esc(rd.kids.entity)}, bridge ${esc(rd.kids.bridge || '—')})` : `does not vouch: ${esc(rd.error || 'keys not in the authority statement')}`}</dd>
-      <dt>PingFederate</dt><dd>${pf.registered_until ? `registered until ${esc(new Date(pf.registered_until * 1000).toLocaleString())}` : `not registered${pf.error ? `: ${esc(pf.error.slice(0, 160))}` : ''}`}</dd>
+      <dt>Raidiam</dt><dd>${rd.served ? 'hosts its Entity Configuration' : 'does not serve its Entity Configuration'}; ${rd.vouches ? `vouches for it, with its bridge key (kid ${esc(rd.kids.bridge)})` : `does not vouch: ${esc(rd.error || 'its bridge key is not published')}`}</dd>
+      <dt>PingFederate</dt><dd>${pf.registered ? `registered it from Raidiam at its first token (${esc(pf.at)})` : 'registers it from Raidiam at its first token'}</dd>
     </dl>`;
   } catch (err) {
-    box.textContent = `Could not ask the provider: ${err.message}`;
+    box.textContent = `Could not ask Raidiam: ${err.message}`;
   }
 }
 
@@ -300,7 +298,7 @@ document.addEventListener('click', async (e) => {
     notice(
       document.getElementById('notice'),
       act === 'approve'
-        ? (doc.kind === 'principal' ? 'Deployed. Its statement, certificates and roles are in Raidiam; the provider hosts it.' : 'Approved. The software statement is live in the control plane.')
+        ? (doc.kind === 'principal' ? 'Deployed. Raidiam hosts its statement, certificate and roles; its bridge key is in the KMS.' : 'Approved. The software statement is live in the control plane.')
         : 'Suspended. The software statement is Inactive in the control plane.',
       'ok'
     );

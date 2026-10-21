@@ -1,24 +1,26 @@
 """sub_agent: an agent other agents call - the Accounts agent or the Payments agent (../gateway/README.md, "Agents
 calling agents"). CBA's pattern (invoice-settler-b-7): one federation entity, both a client (openid_relying_party) and
-a resource (oauth_resource, interface "agent"), hosted by the agent provider at <provider>/agent/<name>.
+a resource (oauth_resource, interface "agent"), at <origin>/agent/<name>, serving its own Entity Configuration there.
 
 It serves MCP at <its identifier>/mcp/v1, behind the gateway, which has already verified the caller's token (signature,
 audience = this agent, DPoP from the caller's instance key, Shared Signals) and asked the PDP. For each tool call it:
 
   1. exchanges the caller's token at PingFederate (RFC 8693): subject_token = that token; resource = the resource it
-     calls next; client authentication = its own attestation (ATTESTER: PingFederate's attester, or the provider's),
-     in DPoP combined mode with its own
+     calls next; client authentication = its own attestation, by PingFederate's attester, in DPoP combined mode with its
+     own
      instance key. The new token: sub = the caller, act = {sub: this agent}, aud = the resource, cnf.jkt = this
      instance's key;
   2. calls the resource through its gateway with that token and a DPoP proof per request;
   3. answers with the resource's result and the delegation it used.
 
-Environment: AGENT_ID, AGENT_PROVIDER, AGENT_KIND (accounts | payments), DOWNSTREAM_RESOURCE (the resource's
+Environment: AGENT_ID, AUTHORITY_HINT, ENTITY_KEY_FILE, BRIDGE_JWKS_FILE, AGENT_CAPABILITY, AGENT_KIND (accounts | payments), DOWNSTREAM_RESOURCE (the resource's
 identifier), AUTHORISATION_SERVER (an issuer), ISSUER_HOST_OVERRIDE, PF_CA_FILE, LISTEN_PORT, INSTANCE_KEY_FILE,
 SPIRE_SOCKET, AGENT_ALLOWED_HOSTS.
 """
 import contextvars
+import json
 import os
+import threading
 import time
 from urllib.parse import urlsplit
 
@@ -34,7 +36,6 @@ import federation
 import fedresolve
 
 AGENT_ID = os.environ["AGENT_ID"].rstrip("/")
-PROVIDER = os.environ["AGENT_PROVIDER"].rstrip("/")
 KIND = os.environ["AGENT_KIND"]
 DOWNSTREAM = os.environ["DOWNSTREAM_RESOURCE"].rstrip("/")
 ISSUER = os.environ["AUTHORISATION_SERVER"].rstrip("/")
@@ -49,16 +50,16 @@ _attestation = {"jwt": None, "exp": 0}
 
 
 def attestation() -> str:
-    """This instance's attestation on SPIRE's word (a.attest: ATTESTER=pingfederate or provider); fetched again
-    before it runs out."""
+    """This instance's attestation on SPIRE's word, by PingFederate's attester (a.attest); fetched again before it runs
+    out."""
     if not _attestation["jwt"] or _attestation["exp"] - time.time() < 120:
         try:
-            _attestation["jwt"] = a.attest(AGENT_ID, KEY, PUBLIC, PROVIDER, ISSUER, CA)
+            _attestation["jwt"] = a.attest(AGENT_ID, KEY, PUBLIC, ISSUER, CA)
         except a.Refused as e:  # a SystemExit, for the agent's command line; here, an error for this call only
             raise RuntimeError(str(e)) from None
         claims = jwt.decode(_attestation["jwt"], options={"verify_signature": False})
         _attestation["exp"] = claims["exp"]
-        print(f"{KIND} agent: attested by {claims['iss']} ({a.ATTESTER}) until {time.ctime(claims['exp'])}", flush=True)
+        print(f"{KIND} agent: attested by {claims['iss']} until {time.ctime(claims['exp'])}", flush=True)
     return _attestation["jwt"]
 
 
@@ -180,8 +181,70 @@ class CallerToken:
             incoming.reset(token)
 
 
+class SelfHosted:
+    """This agent's own federation identity, served by itself at its identifier - no provider hosts it:
+
+      <path>/.well-known/openid-federation       its Entity Configuration, signed with its entity key (ENTITY_KEY_FILE)
+                                                 under the kid Raidiam publishes for it, naming Raidiam's authority; its
+                                                 client keys are its bridge key's public half (BRIDGE_JWKS_FILE), and
+                                                 its oauth_resource metadata says what it offers other agents
+      <path>/.well-known/oauth-protected-resource that resource metadata on its own
+
+    Its SPIFFE binding is not here: Raidiam's authority publishes it, and PingFederate's attester reads it there.
+    PingFederate registers it from this configuration at its first attested token request."""
+
+    def __init__(self, app):
+        self.app = app
+        self.authority = os.environ["AUTHORITY_HINT"].rstrip("/")
+        self.private, self.public = federation.load_or_create_key(os.environ.get("ENTITY_KEY_FILE", "/agent-keys/entity.private.jwk.json"))
+        with open(os.environ.get("BRIDGE_JWKS_FILE", "/agent-keys/bridge.public.jwks.json")) as f:
+            self.client_jwks = json.load(f)
+        name = f"POC {KIND.title()} Agent"
+        capability = os.environ.get("AGENT_CAPABILITY", "")
+        self.resource = {
+            "resource": AGENT_ID, "resource_name": name, "authorization_servers": [ISSUER],
+            "authorization_details_types_supported": [capability] if capability else [],
+            "bearer_methods_supported": ["header"], "dpop_bound_access_tokens_required": True,
+            "endpoints": [AGENT_ID + "/mcp/v1"], "resource_documentation": AGENT_ID + "/.well-known/oauth-protected-resource",
+            "https://cba.com.au/federation/interface": "agent"}
+        self.name = name
+        threading.Thread(target=self.track_kid, daemon=True).start()
+        base = urlsplit(AGENT_ID).path
+        self.paths = {base + "/.well-known/openid-federation": self.entity_configuration,
+                      base + "/.well-known/oauth-protected-resource": self.protected_resource}
+
+    def track_kid(self):
+        """The configuration is signed under the kid Raidiam publishes for the entity key (it names keys its own way):
+        looked up now and hourly, in the background, so serving the configuration never waits on Raidiam."""
+        while True:
+            try:
+                self.public["kid"] = federation.vouched_kid(federation.subordinate_statement(self.authority, AGENT_ID), self.public)
+                time.sleep(3600)
+            except Exception as e:
+                print(f"{KIND}-agent: Raidiam's kid for the entity key not found yet: {e}", flush=True)
+                time.sleep(30)
+
+    def entity_configuration(self):
+        statement = federation.entity_configuration(AGENT_ID, self.private, self.public, self.authority, self.name,
+                                                    client_jwks=self.client_jwks,
+                                                    extra_metadata={"oauth_resource": self.resource})
+        return "application/entity-statement+jwt", statement.encode()
+
+    def protected_resource(self):
+        return "application/json", json.dumps(self.resource).encode()
+
+    async def __call__(self, scope, receive, send):
+        serve = self.paths.get(scope.get("path")) if scope["type"] == "http" and scope.get("method") == "GET" else None
+        if not serve:
+            return await self.app(scope, receive, send)
+        content_type, body = serve()
+        await send({"type": "http.response.start", "status": 200,
+                    "headers": [(b"content-type", content_type.encode()), (b"content-length", str(len(body)).encode())]})
+        await send({"type": "http.response.body", "body": body})
+
+
 if __name__ == "__main__":
     print(f"{KIND}-agent: {AGENT_ID}, MCP at {MCP_PATH}, calls {DOWNSTREAM}, instance key "
-          f"{a.jwk_thumbprint(a.public_jwk(KEY))}", flush=True)
-    uvicorn.run(CallerToken(mcp.streamable_http_app()), host="0.0.0.0", port=int(os.environ.get("LISTEN_PORT", "8090")),
-                log_level="warning")
+          f"{a.jwk_thumbprint(a.public_jwk(KEY))}; serves its own Entity Configuration", flush=True)
+    uvicorn.run(SelfHosted(CallerToken(mcp.streamable_http_app())), host="0.0.0.0",
+                port=int(os.environ.get("LISTEN_PORT", "8090")), log_level="warning")

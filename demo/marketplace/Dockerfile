@@ -1,7 +1,8 @@
 FROM node:20-alpine
 
-# The control centre drives the rig through the Docker socket: SPIRE entries, agent runs.
-RUN apk add --no-cache docker-cli
+# The control centre drives the rig through the Docker socket: SPIRE entries, agent runs. openssl makes the subject
+# template for a bridge key's CSR, which the KMS signs (src/vault.js).
+RUN apk add --no-cache docker-cli openssl
 
 WORKDIR /app
 

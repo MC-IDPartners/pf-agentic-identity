@@ -1,12 +1,12 @@
 """OpenBao for the rig's bridge keys: initialise (once), unseal, enable transit, write the two policies and their tokens,
 and import the bridge keys already in use - so PingFederate can sign each attested client's bridge assertion in the
-vault (OIDF_BRIDGE_SIGNER_BACKING=vault) and the provider can enrol new agents there.
+vault (OIDF_BRIDGE_SIGNER_BACKING=vault) and the marketplace can enrol new agents there.
 
     python3 openbao/setup.py            idempotent: initialises only an uninitialised vault, imports only missing keys
 
 Writes, under keys/openbao/ (git-ignored, 0600): init.json (the unseal key and root token), pf-bridge.token (PingFederate:
-read and sign bridge-* keys), provider/provider.token (the agent provider: create bridge-* keys and their CSRs - never sign, export,
-back up or delete them). Imports, as RSA transit keys, the bridge keys the rig's existing clients are certified with:
+read and sign bridge-* keys), enrolment/enrolment.token (the marketplace, which deploys agents: create bridge-* keys and
+their CSRs - never sign, export, back up or delete them). Imports, as RSA transit keys, the bridge keys the rig's existing clients are certified with:
 bridge-spire-workload, bridge-spire-client, bridge-accounts-agent, bridge-payments-agent and each deployed Principal
 version's (bridge-principal-N) - from keys/raidiam/... - so Raidiam's certificates stay valid. Nothing is printed but
 names; the key files are left where they are.
@@ -36,12 +36,12 @@ PF_POLICY = """
 path "transit/keys/bridge-*" { capabilities = ["read"] }
 path "transit/sign/bridge-*" { capabilities = ["update"] }
 """
-PROVIDER_POLICY = """
-# The agent provider enrols agents: it creates their bridge keys and has the vault make their CSRs. OpenBao counts
-# creating a key as an update, and a deny on a key's /config cannot outrank this glob, so the provider can also change a
-# bridge key's settings (make it exportable, rotate it) - it could disrupt an agent, as it can already through the
-# agent's entity key it holds. It cannot sign with a bridge key (it would then be every agent's bridge), export, back up
-# or delete one: no rule here grants those paths.
+ENROLMENT_POLICY = """
+# Enrolment - the marketplace, deploying an agent: it creates the agent's bridge key and has the vault make its CSR.
+# OpenBao counts creating a key as an update, and a deny on a key's /config cannot outrank this glob, so the enrolment
+# token can also change a bridge key's settings (make it exportable, rotate it) - it could disrupt an agent. It cannot
+# sign with a bridge key (it would then be every agent's bridge), export, back up or delete one: no rule here grants
+# those paths.
 path "transit/keys/bridge-*" { capabilities = ["create", "read", "update"] }
 path "transit/sign/*" { capabilities = ["deny"] }
 path "transit/export/*" { capabilities = ["deny"] }
@@ -102,11 +102,11 @@ def configure(root):
     if "transit/" not in (mounts.get("data") or mounts):
         call("POST", "/v1/sys/mounts/transit", {"type": "transit"}, token=root)
         print("enabled      transit")
-    for name, policy in (("pf-bridge", PF_POLICY), ("provider", PROVIDER_POLICY)):
+    for name, policy in (("pf-bridge", PF_POLICY), ("enrolment", ENROLMENT_POLICY)):
         call("PUT", f"/v1/sys/policies/acl/{name}", {"policy": policy}, token=root)
-    # The provider's token in a directory of its own: the provider mounts that, and so never sees PingFederate's token
+    # The enrolment token in a directory of its own: the marketplace mounts that, and so never sees PingFederate's token
     # or the root token beside it.
-    for name, policy in (("pf-bridge", "pf-bridge"), ("provider/provider", "provider")):
+    for name, policy in (("pf-bridge", "pf-bridge"), ("enrolment/enrolment", "enrolment")):
         path = os.path.join(OUT, f"{name}.token")
         if os.path.exists(path):
             with open(path) as f:

@@ -43,21 +43,17 @@
 #                   see raidiam/README.md. Unset: federation stays inert, as the FAPI, SSF and CIBA plans want it.
 #   SPIRE_BUNDLE_FILE  raidiam: a SPIRE trust bundle (spire-server bundle show -format spiffe); with it the
 #                   attestation client spire-workload is authored, without it the attestation flow is left out.
-#   RAIDIAM_ATTESTED_CLIENT_ID  raidiam: the Entity Identifier of a Raidiam-registered client whose own Entity
-#                   Configuration carries its spiffe_client_bindings (spire-workload's entity-host serves it): the
-#                   attester then takes SPIFFE bindings from it first. See raidiam/README.md.
+#   RAIDIAM_ATTESTED_CLIENT_ID  raidiam: the Entity Identifier of a Raidiam-registered client given a bridge key of its
+#                   own (attested-client.sh), for the older flows in raidiam/README.md.
 #   RAIDIAM_RESOURCE_ID  raidiam: the Entity Identifier of the agent-r flow's resource server (spire-workload's
 #                   rs-accounts); PingFederate gets a token manager answering RFC 8707 requests that name it.
 #   RAIDIAM_PAYMENTS_RESOURCE_ID  raidiam: rs-payments' Entity Identifier (agents calling agents).
-#   RAIDIAM_HOSTED_AGENTS  raidiam, with RAIDIAM_PROVIDER_ID: the provider's sub-agents, e.g. "accounts-agent
-#                   payments-agent" (<provider>/agent/<name>): token managers for them, the token exchange that lets
-#                   them call on for an agent, and their bridge keys. See ../gateway/README.md.
-#   RAIDIAM_PROVIDER_ID  raidiam, with RAIDIAM_ATTESTED_CLIENT_ID: the Entity Identifier of the agent provider
-#                   (raidiam/provider.sh), whose Entity Configuration publishes the attester's key: the attester signs
-#                   as it, and the token endpoint trusts it through the federation. See raidiam/README.md.
-#   RAIDIAM_SPIFFE_SOURCE  raidiam: where PingFederate's attester reads which SPIFFE IDs are which agents. authority
-#                   (default): Raidiam's statements (AdditionalSoftwareMetadata, published as value policies);
-#                   provider: the provider's Entity Configuration (spiffe_client_bindings).
+#   RAIDIAM_HOSTED_AGENTS  raidiam: the sub-agents, e.g. "accounts-agent payments-agent", each serving its own
+#                   Entity Configuration at <RAIDIAM_PROVIDER_ID>/agent/<name>: token managers for them, the token
+#                   exchange that lets them call on for an agent, and their bridge keys. See ../gateway/README.md.
+#   RAIDIAM_PROVIDER_ID  raidiam: the origin the sub-agents are served at (Kong, https://host.docker.internal:8443) -
+#                   once the agent provider's identifier; there is no provider now. Principal agents are hosted by
+#                   Raidiam (RAIDIAM_MANAGED_ENTITY_BASE/<statement id>) and need RAIDIAM_BRIDGE_BACKING=vault.
 #   SUITE_PORT      federation-op: the port suite/suite-compose.yml publishes the suite on (default 9643).
 #   SUITE_BASE_URL  federation-op: the suite's origin as its compose file gives it (default
 #                   https://host.docker.internal:$SUITE_PORT). SUITE_ALIAS: the plan's alias.
@@ -224,27 +220,21 @@ if [[ "${PF_PROFILE:-}" == raidiam ]]; then
   { echo "OIDF_ATTESTER_SIGNING_JWK=$(tr -d '\n' < "$HERE/keys/raidiam/attester-signing.private.jwk.json")"
     echo "OIDF_FEDERATION_ATTESTER_JWKS=$(tr -d '\n' < "$HERE/keys/raidiam/attester-signing.public.jwks.json")"
   } >> "$CTX/vars.env"
-  # Which SPIFFE IDs are instances of which client. RAIDIAM_SPIFFE_SOURCE=authority (the default): Raidiam's own word
-  # - each agent's statement carries its SPIFFE binding (AdditionalSoftwareMetadata: spiffe_id, spiffe_trust_domain,
-  # spiffe_bundle_endpoint, client_attesters), which the authority publishes as value policies on
-  # openid_relying_party, so the attester takes every entity the authority lists whose chain resolves to a binding
-  # naming PingFederate (OIDF_ATTESTER_ISSUER). provider: the spiffe_client_bindings of one federation entity, chain-
-  # validated to the anchor - the agent provider (RAIDIAM_PROVIDER_ID, raidiam/provider.sh), whose Entity
-  # Configuration binds all the agents it hosts, else the attested client itself. Either way the agents' Entity
-  # Configurations and SPIRE's keys are served from the Docker host, a private address the fetch policy refuses
-  # unless named.
-  BINDINGS_ENTITY="${RAIDIAM_PROVIDER_ID:-${RAIDIAM_ATTESTED_CLIENT_ID:-}}"
+  # No agent provider. Which SPIFFE IDs are instances of which client is Raidiam's own word: each agent's statement
+  # carries its SPIFFE binding (AdditionalSoftwareMetadata: spiffe_id, spiffe_trust_domain, spiffe_bundle_endpoint,
+  # client_attesters), which the authority publishes as value policies on openid_relying_party, so the attester takes
+  # every entity the authority lists whose chain resolves to a binding naming PingFederate (OIDF_ATTESTER_ISSUER). And
+  # nobody registers an agent beforehand: once its attestation verifies, PingFederate registers it from its chain
+  # (OIDF_ATTESTATION_AUTO_REGISTRATION) - a Principal Raidiam hosts, or a sub-agent serving its own configuration at
+  # <RAIDIAM_PROVIDER_ID>/agent/<name>. Those configurations and SPIRE's keys are served from the Docker host, a
+  # private address the fetch policy refuses unless named.
   AUTHORITY="$(sed -n 's/^OIDF_FEDERATION_TRUST_ANCHORS=\([^,]*\).*/\1/p' "$HERE/vars.raidiam.env" | head -1)"
-  if [[ "${RAIDIAM_SPIFFE_SOURCE:-authority}" == authority && -n "$AUTHORITY" ]]; then
-    { echo "OIDF_ATTESTER_FEDERATION_AUTHORITY=$AUTHORITY"
-      echo "OIDF_ATTESTER_ISSUER=$PF_BASE_URL"
-    } >> "$CTX/vars.env"
-  elif [[ -n "$BINDINGS_ENTITY" ]]; then
-    echo "OIDF_ATTESTER_FEDERATION_ENTITY=$BINDINGS_ENTITY" >> "$CTX/vars.env"
-  fi
-  if [[ -n "$BINDINGS_ENTITY" ]]; then
-    echo "OIDF_FETCH_HOST_ALLOWLIST=$(python3 -c 'import sys,urllib.parse;print(urllib.parse.urlsplit(sys.argv[1]).hostname)' "$BINDINGS_ENTITY")" >> "$CTX/vars.env"
-  fi
+  [[ -n "$AUTHORITY" ]] || { echo "ERROR: vars.raidiam.env names no OIDF_FEDERATION_TRUST_ANCHORS" >&2; exit 1; }
+  { echo "OIDF_ATTESTER_FEDERATION_AUTHORITY=$AUTHORITY"
+    echo "OIDF_ATTESTER_ISSUER=$PF_BASE_URL"
+    echo "OIDF_ATTESTATION_AUTO_REGISTRATION=true"
+    echo "OIDF_FETCH_HOST_ALLOWLIST=$(python3 -c 'import sys,urllib.parse;print(urllib.parse.urlsplit(sys.argv[1]).hostname)' "${RAIDIAM_PROVIDER_ID:-https://host.docker.internal:8443}")"
+  } >> "$CTX/vars.env"
 fi
 chmod 600 "$CTX/vars.env"
 

@@ -6,7 +6,7 @@ const { execFile } = require('child_process');
 const config = require('./config');
 
 /**
- * The rig around the marketplace: the agent provider's admin API (Principal version slots), SPIRE (registration
+ * The rig around the marketplace: SPIRE (registration
  * entries, through the Docker socket), the agent image (a job run as a deployed version) and PingFederate's Shared
  * Signals transmitter (lifecycle events).
  */
@@ -18,24 +18,6 @@ function docker(args, { timeout = 600000, env } = {}) {
     execFile('docker', args, { timeout, maxBuffer: 16 * 1024 * 1024, env: { ...process.env, ...(env || {}) } },
       (err, stdout, stderr) => resolve({ code: err ? err.code || 1 : 0, stdout: String(stdout), stderr: String(stderr) }));
   });
-}
-
-/** The provider's admin API (inside the compose network only). */
-async function provider(method, path, body) {
-  const res = await fetch(rig.providerAdmin + path, {
-    method,
-    headers: { 'content-type': 'application/json', accept: 'application/json' },
-    body: body ? JSON.stringify(body) : undefined,
-    signal: AbortSignal.timeout(30000),
-  });
-  const json = await res.json().catch(() => ({}));
-  if (!res.ok) {
-    const err = new Error(`provider ${method} ${path} → ${res.status}: ${json.error_description || json.error || ''}`);
-    err.status = res.status;
-    err.body = json;
-    throw err;
-  }
-  return json;
 }
 
 /** A SPIRE registration entry: spiffeId for containers labelled app=<label>. Returns 'exists' or 'created'. */
@@ -145,4 +127,4 @@ async function emit(eventType, agentId) {
   return (res.json || {}).count || 0;
 }
 
-module.exports = { docker, provider, spireEntry, removeSpireEntry, runAgent, emit };
+module.exports = { docker, spireEntry, removeSpireEntry, runAgent, emit };

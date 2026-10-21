@@ -6,8 +6,8 @@ checks - things the agent itself would refuse to try. Prints one JSON line per p
                                                  # instance of it while another carries on
     PROBE=emit EMIT_EVENT=... EMIT_SUB=... EMIT_SECRET=... python probe.py   # raise one event
 
-Each "instance" is a key of its own, attested on this container's SVID (agent.attest: ATTESTER=pingfederate or
-provider) - two copies of the agent - and each token is DPoP-bound to its instance's key.
+Each "instance" is a key of its own, attested on this container's SVID by PingFederate's attester (agent.attest) - two
+copies of the agent - and each token is DPoP-bound to its instance's key.
 """
 import json
 import os
@@ -37,7 +37,7 @@ class Instance:
     def __init__(self, key_file: str):
         self.key, public = a.instance_key(key_file)
         self.jkt = a.jwk_thumbprint(a.public_jwk(self.key))
-        self.attestation = a.attest(agent_id, self.key, public, os.environ["AGENT_PROVIDER"].rstrip("/"), issuer, ca)
+        self.attestation = a.attest(agent_id, self.key, public, issuer, ca)
 
     def token(self) -> str:
         return a.token(issuer, resource, agent_id, self.attestation, self.key)
