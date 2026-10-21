@@ -1,6 +1,6 @@
 # Running in a protected environment
 
-What changes when every component - PingFederate, the agent provider, the agents, the resource servers - is
+What changes when every component - PingFederate, the agents, the resource servers - is
 privately hosted (for example in a bank's AWS accounts) and can call Raidiam, but Raidiam cannot call back.
 
 This rig already runs that way: nothing on `host.docker.internal` is reachable from Raidiam, so each point below was
@@ -14,7 +14,7 @@ either observed here or follows directly from it. Where something is inferred ra
 | Internal parties resolving each other (PingFederate, agent, resource) | Works, with chains resolved locally - as PingFederate does, and the agent and resource do with `spire-workload/fedresolve.py` |
 | Your agent calling an external authorisation server or API | Only with the trust chain carried in the request |
 | Raidiam listing your entities, and vouching for them (`/list`, `/fetch`) | Works |
-| An external party, or Raidiam, resolving your entities (`/resolve`, the listing's status) | Does not work |
+| An external party, or Raidiam, resolving your entities (`/resolve`, the listing's status) | Does not work, except for entities Raidiam hosts (the Principal agents, see 4) |
 | Raidiam telling you about a withdrawal or a change | Does not work - poll instead |
 
 ## Hard roadblocks
@@ -58,27 +58,35 @@ resolution:
 
 | Where | How long a withdrawn agent can keep working |
 |---|---|
-| PingFederate's attester (the entity and its bindings) | up to 300 s (its cache) |
-| An explicit registration at PingFederate | until its chain expires, about 20 minutes |
+| PingFederate's attester (the bindings it reads from Raidiam's authority) | up to 300 s (how often it reads the authority) |
+| A registration at PingFederate | until its chain expires, about 20 minutes |
 | A resource server's membership check (`rs_accounts.py`) | up to 300 s, or the chain's expiry if sooner |
 
 Plan for polling, or shorter cache lifetimes - or signal inside the network: the gateway's PEP receives Shared
 Signals from PingFederate's transmitter and refuses a revoked or disabled agent within about two seconds
-(`../gateway/README.md`, "Shared Signals"). The transmitters that know - the provider, the marketplace - are inside
-the network too.
+(`../gateway/README.md`, "Shared Signals"). The party that knows - the marketplace, which suspends the agent - is
+inside the network too.
 
 ## Workable, but to fix for production
 
-### 4. Federation-managed entities do not help
+### 4. Federation-managed entities, hosted by Raidiam
 
-Letting Raidiam host each Entity Configuration would remove the need for an internal entity host, but:
+Raidiam hosts each Principal agent's Entity Configuration: every Principal version is a federation-managed statement,
+at `https://rp.directory.cba.raidiam.io/openid_relying_party/<statement id>`, signed by Raidiam. That removed the need
+for an internal entity host, the agent provider (`entity-host`), which the rig no longer has. It also takes the
+Principals out of roadblock 1: their configurations are on Raidiam's host, so anyone can resolve them.
 
-- Raidiam's federation-managed configurations have no `authority_hints`, so they cannot be resolved (PingFederate:
-  *Leaf JWT not found in trust chain*; Raidiam's own `/resolve` fails the same way);
-- `AdditionalSoftwareMetadata` is never published, in either mode, so workload details such as SPIFFE bindings cannot
-  travel through Raidiam.
+Two things stopped this before, and both are now fixed in Raidiam:
 
-So an internal entity host - the agent provider, `entity-host` here - is needed regardless.
+- its federation-managed configurations had no `authority_hints`, so they could not be resolved (PingFederate:
+  *Leaf JWT not found in trust chain*). They now carry them and resolve through the authority (checked 2026-10-18);
+- `AdditionalSoftwareMetadata` was never published, so workload details such as SPIFFE bindings could not travel
+  through Raidiam. The authority now publishes it as value policies on `openid_relying_party`, and PingFederate's
+  attester reads the bindings from there.
+
+What remains: Raidiam keeps at most 255 characters of that metadata (counted on its own re-serialisation, and over it
+answers 500 rather than a validation error), so it carries the SPIFFE binding and nothing else. The sub-agents, which
+other agents call, still serve their own Entity Configurations from inside the network.
 
 ### 5. Shared organisation keys
 
@@ -101,15 +109,15 @@ internal entities). It must be an unprotected PKCS12, as the JDK builds its own 
 
 ### 7. PingFederate 0.7.0 does not register unknown clients at the token endpoint
 
-`TokenChannel.discoversUnknownClients()` is false, so:
+`TokenChannel.discoversUnknownClients()` is false in 0.7.0, so an agent had to be registered explicitly
+(`/federation/register`) - the agent provider's job - and registered again before each registration ended with its
+chain.
 
-- the provider must register its agents explicitly (`/federation/register`), and keep re-registering them;
-- an explicit registration ends when its chain expires (about 20 minutes with Raidiam), and the token endpoint does
-  not renew it;
-- every restart of PingFederate drops the registrations.
-
-Raidiam's own authorisation server registers an attested agent on its first token request. Doing the same here needs
-a change to the module.
+The rig's modules now do what Raidiam's own authorisation server does: with `OIDF_ATTESTATION_AUTO_REGISTRATION=true`,
+once an attestation verifies, a client PingFederate does not have is registered by discovery through its chain. A
+request that is not authenticated still discovers nothing. A restart of PingFederate still drops the registrations,
+and each agent is registered again at its next attested token request. The change is newer than 0.7.0 and not yet in
+a release.
 
 ### 8. Entity identifiers are permanent
 
@@ -159,15 +167,13 @@ the anchor's Entity Configuration, checked out of band.
 
 | Shortcut | In production |
 |---|---|
-| Attester trust | already as in production: no `oidf.mock.attesters`; PingFederate's attester and the provider's are trusted through their federation chains |
+| Attester trust | already as in production: no `oidf.mock.attesters`; PingFederate's attester, the only one, is trusted through its federation chain |
 | Bridge keys in a file (`OIDF_BRIDGE_SIGNER_BACKING=config`) | OpenBao (`vault`) |
 | Attester private keys inline (`OIDF_ATTESTER_SIGNING_JWK`, `attestation_signing_jwk`) | an OpenBao key reference |
-| The provider's attester key in a mounted file | an HSM or KMS key (AWS KMS, say) |
 | TLS from the rig's own CA | the bank's private CA (see 6) |
 | The marketplace drives Docker through its socket (SPIRE entries, agent runs) | a deployment pipeline with its own, scoped credentials (SPIRE's API, the platform's) |
 | An operator's Raidiam session, kept in an unauthenticated Mongo on the compose network | client credentials (`directory:management`) once Raidiam allows them, secrets in a vault |
-| The SSF emitter's secret mounted into the marketplace (`secrets.env`) | the lifecycle events raised by the agent provider or the Trust Controller as an SSF transmitter |
-| Principal version slots with bridge keys made in advance | bridge keys created on demand in OpenBao (`RAIDIAM_BRIDGE_BACKING=vault`, in the rig now) |
+| The SSF emitter's secret mounted into the marketplace (`secrets.env`) | the lifecycle events raised by the Trust Controller as an SSF transmitter |
 | OpenBao on plain HTTP, one unseal key and its root token in `keys/openbao/` | TLS, Shamir shares or auto-unseal through a KMS/HSM, no root token at rest |
 
 ## What already works
@@ -176,7 +182,10 @@ the anchor's Entity Configuration, checked out of band.
 - `spire-workload/fedresolve.py` does the same for the agent and the resource: leaf from inside, the authority's and
   the anchor's statements from Raidiam's `/fetch`, every signature verified down from the pinned anchor key, Raidiam's
   policy applied.
-- The agent provider attests instances on SPIRE's word, and PingFederate trusts its attestations through the
-  provider's chain.
+- PingFederate's attester attests instances on SPIRE's word, against the SPIFFE bindings Raidiam's authority
+  publishes, and its attestations are trusted through PingFederate's chain.
+- Raidiam hosts the Principal agents' Entity Configurations, and PingFederate registers an agent from its chain at its
+  first attested token request - nobody registers it beforehand.
+- The bridge keys are created in OpenBao when an agent is deployed, and only their CSRs leave it.
 - A resource is vouched for by Raidiam - a software statement with its identifier as `ClientId`, plus an ApiResource
   - without Raidiam reaching it.

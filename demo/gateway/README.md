@@ -33,7 +33,7 @@ From `spire-workload/`, with the rest of the rig up (`../raidiam/README.md`, "Th
 
 ```bash
 docker compose up -d rs-accounts pingauthorize coaz-pep gateway   # PingAuthorize takes a minute on first start
-python harness.py                                                  # 40 checks: the gateway's, DPoP's and the signals' among them
+python harness.py                                                  # 64 checks: the gateway's, DPoP's and the signals' among them
 ```
 
 PingAuthorize fetches a DevOps evaluation licence on start from `~/.pingidentity/config`
@@ -48,9 +48,9 @@ Decisions are in coaz-pep's log (`docker compose logs -f coaz-pep`): `COAZ PERMI
 
 ## Tokens bound to the agent instance (DPoP)
 
-The token is bound to the key the provider attested - the agent instance's own, proven by its SPIRE SVID:
+The token is bound to the key PingFederate's attester attested - the agent instance's own, proven by its SPIRE SVID:
 
-1. The agent asks for a token with `attest_jwt_client_auth` in **DPoP combined mode**: the provider's attestation
+1. The agent asks for a token with `attest_jwt_client_auth` in **DPoP combined mode**: the attestation
    (`cnf.jwk` = the instance key) and a DPoP proof signed by that key, instead of the attestation PoP. The module
    checks the proof's key is the attestation's `cnf` key; PingFederate issues `token_type: DPoP` with
    `cnf.jkt` = the instance key's thumbprint. No PingFederate setting is needed.
@@ -88,19 +88,19 @@ Without it, a withdrawn agent keeps working until the resource's cache (300 s) a
 (about 20 minutes) run out - Raidiam cannot push into the network. With it the gateway refuses within a poll, about
 two seconds (harness stage `signals`; events raised through PingFederate's `/ssf/events:emit`).
 
-Next transmitters: the agent provider (an instance it stops attesting - the subject its key thumbprint) and the
-marketplace (an agent it suspends) - both inside the network.
+Today the marketplace raises `account-disabled` and `account-enabled` through PingFederate's `/ssf/events:emit` when
+it suspends or reinstates an agent. Next: the Trust Controller as a transmitter itself.
 
 ## Agents calling agents
 
-A **Principal** agent (the rig's first agent, `…/agent/spire-client`) has work done by two agents it finds through
-the federation: the **Accounts agent** and the **Payments agent**, each acting on its behalf.
+A **Principal** agent (a version the marketplace deployed, which Raidiam hosts) has work done by two agents it finds
+through the federation: the **Accounts agent** and the **Payments agent**, each acting on its behalf.
 
 ```
 Principal ──(OIDF: agents by capability, interface "agent")──▶ Accounts agent / Payments agent
    │ token aud = the agent, DPoP from the Principal's instance key
    ▼
-Kong :8443 (the provider's edge) ─▶ coaz-pep ─▶ PingAuthorize ─▶ the agent (sub_agent.py)
+Kong :8443 (gateway-agents) ─▶ coaz-pep ─▶ PingAuthorize ─▶ the agent (sub_agent.py)
                                                                     │ token exchange (RFC 8693) at PingFederate
                                                                     │ sub = Principal, act = {sub: the agent},
                                                                     │ aud = its resource, cnf = its own instance key
@@ -112,9 +112,9 @@ Kong :8443 (the provider's edge) ─▶ coaz-pep ─▶ PingAuthorize ─▶ the
 
 | Piece | What |
 |---|---|
-| The agents (`../spire-workload/sub_agent.py`) | CBA's pattern (`invoice-settler-b-7`): one entity, a client **and** a resource (`interface: agent`) - a Raidiam software statement whose ClientId is `<provider>/agent/<name>`, and an ApiResource with that `resource`, joined by the identifier. Each runs under its own SPIRE identity (`spiffe://example.org/<name>`), is attested by the provider, and serves MCP at `<its id>/mcp/v1` |
-| The provider (entity-host, `HOSTED_AGENTS`) | Hosts their Entity Configurations (with `oauth_resource` metadata), bindings and registrations, beside the Principal's |
-| Kong on **8443** (`kong/provider.yml.template`) | The provider's edge: an agent's MCP must live under its identifier, on the provider's origin. `/agent/<name>/mcp` through coaz-pep (audience = that agent); everything else to entity-host |
+| The agents (`../spire-workload/sub_agent.py`) | CBA's pattern (`invoice-settler-b-7`): one entity, a client **and** a resource (`interface: agent`) - a Raidiam software statement whose ClientId is `https://host.docker.internal:8443/agent/<name>` (`RAIDIAM_PROVIDER_ID` names the origin), and an ApiResource with that `resource`, joined by the identifier. Each serves its own Entity Configuration (with `oauth_resource` metadata), signed with its own entity key (`keys/raidiam/agents/<name>/`) under the kid Raidiam publishes, and its protected resource metadata. Each runs under its own SPIRE identity (`spiffe://example.org/<name>`), bound on its Raidiam statement, is attested by PingFederate's attester, and serves MCP at `<its id>/mcp/v1` |
+| PingFederate's registration | PingFederate registers each agent from its chain at its first attested token request (`OIDF_ATTESTATION_AUTO_REGISTRATION`); nobody registers them beforehand. With OpenBao, their bridge keys are `bridge-accounts-agent` and `bridge-payments-agent` |
+| Kong on **8443** (`gateway-agents`, `kong/agents.yml.template`) | The agents' edge: an agent's identity and its MCP must live under its identifier. `/agent/<name>/.well-known/*` to the agent itself, `/agent/<name>/mcp*` through coaz-pep (audience = that agent), `/cb` to the marketplace |
 | Kong on **8447** | rs-payments (`rs_accounts.py`, `RESOURCE_KIND=payments`): `pay_invoice`, `payment_initiation` |
 | PingFederate (`../terraform/token-exchange.tf`, `resource.tf`) | A token manager per resource (each its own `aud`); a JWT processor for its own tokens as subject tokens; the delegation policy as the default (federated clients cannot be given one); `act` stamped per resource - a literal, since PingFederate 13 refuses an OGNL `act` - and emitted **as a JSON string**, not the object RFC 8693 asks for (the token manager has no option for it). The PEP and the resource read both |
 | coaz-pep | An audience per route (`token_audience`); a signal about any party in a token - client, `sub`, `act.sub`, the bound instance - refuses it |
@@ -126,8 +126,8 @@ harness's `a2a` stage checks each hop's delegation (`sub`, `act`, audience, the 
 decisions, an over-limit invoice refused by PingAuthorize at the first hop, and the Payments agent disabled by a
 signal while the Accounts agent carries on.
 
-Raidiam, per agent: the software statement, its entity and bridge keys (`AGENT=<name> ../raidiam/attested-client.sh`),
-the ApiResource (family "POC Banking Agents") and roles - `cba.agentic.member` plus a capability role
+Raidiam, per agent: the software statement, with its SPIFFE binding in `AdditionalSoftwareMetadata`, its entity and
+bridge keys (`AGENT=<name> ../raidiam/attested-client.sh`), the ApiResource (family "POC Banking Agents") and roles - `cba.agentic.member` plus a capability role
 (`cba.agentic.servicing.assistant` for `accounts_read`, `cba.agentic.ap.orchestrator` for `payment_initiation`). The
 Principal holds `cba.agentic.ap.orchestrator` too: it cannot delegate what it does not hold.
 

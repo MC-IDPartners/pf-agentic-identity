@@ -13,12 +13,16 @@ Why the third one registers explicitly: 0.7.0's token endpoint registers a clien
 chain it is handed (`RegistrationService$TokenChannel.discoversUnknownClients()` is `false`). The authorization
 and PAR endpoints and `/federation/register` resolve one themselves. Once registered, the token endpoint
 renews an automatic registration by discovery; an explicit one ends with its chain (a day at most), and the
-workload registers again on its next run.
+workload registers again on its next run. An attested request is the exception: with
+`OIDF_ATTESTATION_AUTO_REGISTRATION=true`, which `up.sh` sets for this profile, the token endpoint registers a client it
+does not have by discovery once its attestation verifies - how the agents are registered (below). A request that is not
+authenticated still discovers nothing.
 
 Everything here is **development only**: the production profile refuses inline keys
 (`OIDF_BRIDGE_SIGNER_BACKING=config`, `attestation_signing_jwk`, `OIDF_ATTESTER_SIGNING_JWK`). The rig no longer uses
-the mock attester (`oidf.mock.attesters`): every attester the token endpoint trusts - PingFederate's own and the agent
-provider's - is trusted through its federation chain ("Attesters trusted through the federation", below).
+the mock attester (`oidf.mock.attesters`): the one attester the token endpoint trusts, PingFederate's own, is trusted
+through its federation chain ("Attesters trusted through the federation", below). There is no agent provider: Raidiam
+hosts the Principal agents' Entity Configurations, and the sub-agents serve their own.
 
 ## What it adds to the rig
 
@@ -94,113 +98,86 @@ issued a fresh SVID.
 ## Attestation from a federation entity
 
 In the `attestation` flow above, the attester knows which SPIFFE IDs belong to `spire-workload` because
-PingFederate holds that client, with its `attestation_*` properties. Here the **client's owner publishes it
-instead**, in its own Entity Configuration, and Raidiam vouches for that entity. PingFederate learns the client,
-its instances and their ceiling through the federation, and holds nothing of the client's except a bridge key.
+PingFederate holds that client, with its `attestation_*` properties. For the agents, **Raidiam publishes it
+instead**: each agent's software statement carries its SPIFFE binding, which Raidiam's authority publishes and
+vouches for. PingFederate learns the agent and its instances through the federation, holds nothing of the agent's
+except the name of its bridge key, and registers the agent itself at its first attested token request.
 
 ```mermaid
 sequenceDiagram
-    participant EH as entity-host<br/>(the client's owner)
-    participant W as attested-workload<br/>(app=spire-client)
+    participant W as agent<br/>(app=agent-3f2c9a1e)
     participant S as SPIRE agent
     participant AT as PF attester
+    participant O as spire-oidc
     participant AS as PF token endpoint
     participant R as Raidiam authority + anchor
-    EH->>AS: POST /federation/register (its Entity Configuration)
-    AS->>R: resolve and validate the chain, apply policy
-    AS-->>EH: registered (again every REGISTER_EVERY s)
-    W->>S: JWT-SVID spiffe://example.org/spire-client
+    AT->>R: the authority's relying parties, each chain validated to the pinned anchor
+    AT->>AT: value policies: spiffe_id, spiffe_bundle_endpoint, client_attesters = PingFederate
+    W->>S: JWT-SVID spiffe://example.org/agent-3f2c9a1e
     W->>AT: POST /federation/attestation (SVID, instance key, proof)
-    AT->>EH: GET <client>/.well-known/openid-federation
-    AT->>R: validate its chain to the pinned anchor (cached 300 s)
-    AT->>AT: spiffe_client_bindings: SVID → client, bundle, ceiling
-    AT-->>W: attestation (sub = the client)
+    AT->>O: SPIRE's live keys
+    AT-->>W: attestation (sub = the agent)
     W->>AS: token: attestation + PoP
-    AS->>AS: bridge private_key_jwt with the client's bridge key
-    AS-->>W: access token, client_id = the Raidiam client
+    AS->>R: unknown client: its Entity Configuration (Raidiam hosts it), chain, policy
+    AS->>AS: registered; bridge private_key_jwt with the agent's bridge key
+    AS-->>W: access token, client_id = the agent's Raidiam identifier
 ```
 
 | Piece | What |
 |---|---|
-| The Raidiam software statement | `ClientId` = the entity's URL (by default `https://host.docker.internal:8443/agent/spire-client`), two `rtssigning` keys: the client's **entity key** and its **bridge key** |
-| `raidiam/attested-client.sh keys` / `csr <ssid>` | Both keys and the entity host's TLS certificate, in `keys/raidiam/attested-client/`; then a CSR for each |
-| `spire-workload`'s `entity-host` service | Serves the Entity Configuration, signed with the entity key: the bridge key as the client's only key, and `spiffe_client_bindings` (`client_id`, `spiffe_id`, `issuer`, `evidence_type`, `trust_domain`, `bundle_url`, `entitlement`, `ttl`). It registers the client explicitly, and again before each registration ends |
-| `RAIDIAM_ATTESTED_CLIENT_ID=<entity URL>` on `up.sh` | `OIDF_ATTESTER_FEDERATION_ENTITY` (unless `RAIDIAM_PROVIDER_ID` names the provider, whose Entity Configuration binds all its agents), the entity host's host in `OIDF_FETCH_HOST_ALLOWLIST`, the client's bridge key in `OIDF_BRIDGE_SIGNING_KEYS` |
-| `spire-workload`'s `spire-oidc` service | SPIRE's OIDC Discovery Provider: the trust domain's **current** JWT-SVID keys at `https://host.docker.internal:8445/keys`, read through the agent's Workload API. The bindings name it as `bundle_url`, so the attester verifies each SVID against what SPIRE holds now (fetched at issuance, cached 300 s) - SPIRE's rotations reach it, and with SPIRE's keys unreachable it issues nothing. Its certificate is from the rig's CA, in `keys/raidiam/spire-oidc/` |
-| The trust store | `raidiam/render-runtime-keys.sh` builds the image's own CAs plus the rig's into `truststore.p12`, mounted over the JDK's `cacerts`: the modules' fetches use the JVM's default SSL context, so this is what lets PingFederate check the entity host's and SPIRE's certificates - and Raidiam's - rather than skipping the checks |
-| SPIRE | Entries `spiffe://example.org/spire-client` ← `docker:label:app:spire-client` (`attested-workload` runs with that label) and `spiffe://example.org/spire-oidc` ← `docker:label:app:spire-oidc` (the provider) |
+| The agent's Raidiam software statement | Federation-managed (`openid_entity_federation_managed`): Raidiam hosts and signs its Entity Configuration at `https://rp.directory.cba.raidiam.io/openid_relying_party/<statement id>`, with `client_registration_types` `automatic` and a `jwks_uri` pointing at Raidiam's keystore of the certificates it issued. One `rtssigning` key, the **bridge key**, created in OpenBao. Its `AdditionalSoftwareMetadata` holds the binding - `spiffe_id`, `spiffe_trust_domain`, `spiffe_bundle_endpoint`, `client_attesters` (PingFederate's issuer) - which the authority publishes as value policies on `openid_relying_party`. The marketplace makes all of it ("The control centre", below) |
+| `up.sh` with `PF_PROFILE=raidiam` | `OIDF_ATTESTER_FEDERATION_AUTHORITY` (the authority in `vars.raidiam.env`) and `OIDF_ATTESTER_ISSUER` (`PF_BASE_URL`): the attester's clients come from Raidiam (resolver `openid-federation-authority`). `OIDF_ATTESTATION_AUTO_REGISTRATION=true`: the token endpoint registers an agent once its attestation verifies. `OIDF_FETCH_HOST_ALLOWLIST=host.docker.internal`, for the sub-agents' configurations and SPIRE's keys |
+| The bridge-keys file (`OIDF_BRIDGE_SIGNING_KEYS`) | With `RAIDIAM_BRIDGE_BACKING=vault`: a `"*"` template, `client_id_prefix` `https://rp.directory.cba.raidiam.io/openid_relying_party/` and `key_ref` `bridge-{client_suffix}`, and an entry per sub-agent (`bridge-accounts-agent`, `bridge-payments-agent`). The bridge assertion's `kid` is the one the client's registered keys (Raidiam's `jwks_uri`) give the bridge key, matched on the key: Raidiam names keys its own way |
+| `spire-workload`'s `spire-oidc` service | SPIRE's OIDC Discovery Provider: the trust domain's **current** JWT-SVID keys at `https://host.docker.internal:8445/keys`, read through the agent's Workload API. The bindings name it as `spiffe_bundle_endpoint`, so the attester verifies each SVID against what SPIRE holds now (fetched at issuance, cached 300 s) - SPIRE's rotations reach it, and with SPIRE's keys unreachable it issues nothing. Its certificate is from the rig's CA, in `keys/raidiam/spire-oidc/` |
+| The trust store | `raidiam/render-runtime-keys.sh` builds the image's own CAs plus the rig's into `truststore.p12`, mounted over the JDK's `cacerts`: the modules' fetches use the JVM's default SSL context, so this is what lets PingFederate check the sub-agents' and SPIRE's certificates - and Raidiam's - rather than skipping the checks |
+| SPIRE | An entry per Principal version, `spiffe://example.org/agent-<first 8 characters of its statement id>` ← `docker:label:app:` the same label (the marketplace makes it); the sub-agents' `spiffe://example.org/<name>`; and `spiffe://example.org/spire-oidc` ← `docker:label:app:spire-oidc` |
 
-```sh
-raidiam/attested-client.sh keys
-raidiam/attested-client.sh csr <software statement id>     # upload both CSRs as rtssigning keys
-PF_PROFILE=raidiam SPIRE_BUNDLE_FILE=… RAIDIAM_ATTESTED_CLIENT_ID=https://host.docker.internal:8443/agent/spire-client ./up.sh
-cd spire-workload && docker compose up -d spire-oidc entity-host && docker compose run --rm attested-workload
-```
+This section used to set up a federated client of its own: `spire-client`
+(`https://host.docker.internal:8443/agent/spire-client`, keys from `raidiam/attested-client.sh`), whose Entity
+Configuration and `spiffe_client_bindings` the agent provider (`entity-host`) served and registered, run as
+`attested-workload`. The provider is gone and nothing serves that configuration now, so that flow no longer works. The
+Principal versions the marketplace deploys take its place.
 
 What it takes, learned the hard way:
 
 - **One client per SPIFFE ID.** An identity two clients bind is refused at issuance (`instance identity is bound
-  to more than one client`). `spire-workload` binds `spiffe://example.org/my-workload` only, and the federated client
-  `spiffe://example.org/spire-client`.
-- **A source that fails is skipped silently.** The attester asks its client sources in turn (the federation
-  entity, then PingFederate's clients) and drops one that throws, so a federation entity it cannot fetch looks like
+  to more than one client`). `spire-workload` binds `spiffe://example.org/my-workload` only, and each agent its own.
+- **A source that fails is skipped silently.** The attester asks its client sources in turn (Raidiam's authority,
+  then PingFederate's clients) and drops one that throws, so an authority it cannot read looks like
   "evidence identity is not registered with any client", or a mint for some other client. Its reason is at DEBUG
   (`com.pingidentity.ps.oidf.federation.TrustChainValidator`).
 - **Federation and JWKS fetches trust the JDK's `cacerts` file - nothing else.** Not PingFederate's trusted CAs,
   and not `-Djavax.net.ssl.trustStore`. Hence the trust store mounted over `cacerts`, which must be built as the JDK
   builds its own: unprotected (`keystore.pkcs12.certProtectionAlgorithm=NONE`, `macAlgorithm=NONE`), since the JVM
   reads it with no password and keytool's default encrypts the certificates - a store that then reads as holding
-  none, and fails Raidiam's TLS too. A real entity host and OIDC provider have publicly trusted certificates and
-  need none of this.
+  none, and fails Raidiam's TLS too. Entities and an OIDC provider with publicly trusted certificates need none of
+  this.
 - **A remote bundle keeps only keys whose `use` is `sig` or absent.** SPIRE's own bundle endpoint marks its keys
-  `jwt-svid` / `x509-svid`, so it can't be a `bundle_url`; its OIDC Discovery Provider can.
-- **The attester caches the entity for 300 s.** A change to the bindings reaches it within five minutes; a
+  `jwt-svid` / `x509-svid`, so it can't be a `spiffe_bundle_endpoint`; its OIDC Discovery Provider can.
+- **The attester reads the authority every 300 s**, and at most every 30 s when evidence matches no client, so an
+  agent Raidiam starts vouching for is attested at once. A change to a binding reaches it within five minutes; a
   restart of PingFederate is immediate.
-- **Every restart of PingFederate drops the registration** (the rig rebuilds from its archive); `docker compose
-  restart entity-host` registers it at once rather than at its next interval.
+- **Every restart of PingFederate drops the registrations** (the rig rebuilds from its archive). Each agent is
+  registered again at its next attested token request.
 
 ### Attesters trusted through the federation
 
-Two attesters can vouch for an agent's running instances, and the token endpoint trusts each the same way - by
-resolving the attestation's `iss` through its chain to the pinned anchor and taking the key from that entity's
+PingFederate's own attester is the rig's only one. The token endpoint trusts it as it would any other - by resolving
+the attestation's `iss` through its chain to the pinned anchor and taking the key from that entity's
 `metadata.oauth_client_attester.jwks` (`FederationAttesterKeyResolver`). Nothing is trusted statically.
 
 | Attester | `iss` | Signs with | Its key published in | The bindings it checks |
 |---|---|---|---|---|
-| **PingFederate's own** (`/federation/attestation`; the default, `ATTESTER=pingfederate`) | PingFederate's issuer | `keys/raidiam/attester-signing` (`OIDF_ATTESTER_SIGNING_JWK`) | PingFederate's Entity Configuration (`OIDF_FEDERATION_ATTESTER_JWKS`) - Raidiam vouches for PingFederate | the provider's Entity Configuration (`OIDF_ATTESTER_FEDERATION_ENTITY`), through the provider's chain |
-| **The agent provider** (`entity-host`'s `/attest`, `ATTESTER=provider`) | the provider (`https://host.docker.internal:8443`) | `keys/raidiam/provider/attester` | the provider's Entity Configuration - Raidiam vouches for the provider | its own |
+| **PingFederate's own** (`/federation/attestation`) | PingFederate's issuer | `keys/raidiam/attester-signing` (`OIDF_ATTESTER_SIGNING_JWK`) | PingFederate's Entity Configuration (`OIDF_FEDERATION_ATTESTER_JWKS`) - Raidiam vouches for PingFederate | Raidiam's statements about the agents (`OIDF_ATTESTER_FEDERATION_AUTHORITY`), through each agent's chain |
 
 PingFederate's attester is therefore **federation-native**: any authorisation server in the federation, not only
 PingFederate's token endpoint, can verify its attestations by resolving PingFederate's chain. And it holds nothing per
-agent: which SPIFFE IDs are instances of which agent is the provider's published, Raidiam-vouched metadata.
+agent: which SPIFFE IDs are instances of which agent is Raidiam's value policy on the agent, which no entity can
+override.
 
-The agent provider follows CBA's (`https://provider.demo.cba.raidiam.io`): a federation entity of its own, vouched for by
-Raidiam, hosting the agents' Entity Configurations. Its Entity Configuration publishes
-
-- its attester key, as `oauth_client_attester.jwks` and, as CBA's provider has it, `federation_entity.attestation_jwks`;
-- `spiffe_client_bindings` for every agent it hosts, naming PingFederate as `issuer` - what PingFederate's attester reads;
-- `/agents`, the agents it hosts.
-
-Each agent's own Entity Configuration carries its bindings twice, once per attester (PingFederate's first: the attester
-takes a client's first binding for a SPIFFE ID). Each client's bridge (`OIDF_BRIDGE_SIGNING_KEYS`) accepts both attesters.
-
-| Piece | What |
-|---|---|
-| The provider's Raidiam software statement | Self-managed, `ClientId` = the entity host's root (`https://host.docker.internal:8443`), one `rtssigning` key: the provider's **entity key** |
-| `raidiam/provider.sh keys` / `csr <ssid>` | The entity key and the provider's **attester key** (EC P-256), in `keys/raidiam/provider/`; then a CSR for the entity key |
-| `RAIDIAM_PROVIDER_ID` on `up.sh` | `OIDF_ATTESTER_FEDERATION_ENTITY` = the provider; each client's bridge accepts PingFederate's attester and the provider |
-| `up.sh` with `PF_PROFILE=raidiam` | `OIDF_ATTESTER_SIGNING_JWK` and `OIDF_FEDERATION_ATTESTER_JWKS` = PingFederate's own attester key, private and public |
-| `attested-workload` | The SDK's flow at PingFederate's attester: a JWT-SVID addressed to PingFederate's issuer |
-
-```sh
-raidiam/provider.sh keys
-raidiam/provider.sh csr <provider's software statement id>     # upload as an rtssigning key
-export RAIDIAM_PROVIDER_ID=https://host.docker.internal:8443
-PF_PROFILE=raidiam SPIRE_BUNDLE_FILE=… RAIDIAM_ATTESTED_CLIENT_ID=https://host.docker.internal:8443/agent/spire-client ./up.sh
-cd spire-workload && docker compose up -d spire-oidc entity-host && docker compose run --rm attested-workload
-docker compose run --rm agent get-balance                        # PingFederate's attester
-ATTESTER=provider docker compose run --rm agent get-balance      # the provider's
-```
+The rig had a second attester, the agent provider's (`entity-host`'s `/attest`, `ATTESTER=provider`), as CBA's
+provider (`https://provider.demo.cba.raidiam.io`) has. It went with the provider (`../flows.md`, "Without an agent
+provider").
 
 PingFederate logs the token request as `verified attestation … attester=<iss>` after `Trust chain for <iss> resolved`;
 with an attester publishing some other key, the token request is refused (`no usable key matches the token's key id`).
@@ -208,23 +185,22 @@ with an attester publishing some other key, the token request is refused (`no us
 One behaviour to know: asked to attest a SPIFFE ID under a `client_id` that does not bind it, PingFederate's attester
 (0.7.0) does not refuse - it attests the SVID as whichever client does bind it (`spiffe://example.org/my-workload` as
 `spire-workload`). That client is the right one for the workload, so nothing is gained, but the agent checks the
-attestation's `sub` is itself and refuses otherwise. Still the rig's: the agents are registered by `entity-host`
-(0.7.0's token endpoint does not discover an unknown client).
+attestation's `sub` is itself and refuses otherwise.
 
 ## The agent-r flow
 
 CBA's agent-r (`node agent.mjs`) is handed only its agent's identifier and works the rest out from the federation:
-its running copy is attested (here by PingFederate's attester, or by its provider as agent-r's is), it reads its own
+its running copy is attested (here by PingFederate's attester; agent-r's by its provider), it reads its own
 capabilities from the authority, finds a resource that serves
 the job, gets a token with `attest_jwt_client_auth` and calls the resource's MCP tool. `spire-workload` runs the same
 flow with every component in a container, inside a "protected network" Raidiam cannot reach - as the bank's would be.
+The agent is a Principal version the marketplace deployed, which Raidiam hosts.
 
 ```mermaid
 sequenceDiagram
     autonumber
-    participant A as agent<br/>(app=spire-client)
+    participant A as agent<br/>(app=agent-3f2c9a1e)
     participant S as SPIRE agent
-    participant P as entity-host<br/>(agent provider :8443)
     participant O as spire-oidc
     participant R as Raidiam<br/>(authority, anchor)
     participant PF as PingFederate
@@ -232,11 +208,10 @@ sequenceDiagram
     A->>A: instance key (stays in the container)
     A->>S: JWT-SVID, aud = PingFederate's issuer
     A->>PF: POST /federation/attestation {client_id, instance_key, svid, proof}
-    PF->>P: the provider's Entity Configuration: spiffe_client_bindings
-    PF->>R: the provider's chain to the pinned anchor
+    PF->>R: the authority's relying parties: the agent's binding (value policies), its chain to the pinned anchor
     PF->>O: SPIRE's live keys
     PF-->>A: attestation (iss = PingFederate, sub = agent, cnf = instance key)
-    A->>P: the agent's Entity Configuration
+    A->>R: the agent's Entity Configuration (Raidiam hosts it)
     A->>R: the authority's statement about the agent (/fetch), the anchor's about the authority
     A->>A: verify down from the pinned anchor key, apply policy: capabilities (authorization_details_types)
     A->>R: /list?entity_type=oauth_resource (public resources)
@@ -245,6 +220,7 @@ sequenceDiagram
     A->>A: a resource serving the job's capability, protected by PingFederate
     A->>PF: token: attestation + PoP, client_credentials, resource = rs-accounts
     PF->>R: PingFederate's own chain: its attester key (oauth_client_attester)
+    PF->>R: an unknown client: the agent's chain, registered from it
     PF-->>A: access token, aud = rs-accounts
     A->>RS: MCP tools/call, Bearer token
     RS->>PF: PingFederate's keys: the token is signed, for this resource, unexpired
@@ -255,80 +231,88 @@ sequenceDiagram
 | Component | What |
 |---|---|
 | `agent` (`agent.py`) | agent-r's steps. Unlike agent-r it resolves chains itself (`fedresolve.py`): Raidiam's `/resolve` fetches the leaf, which it cannot reach in the protected network, but its `/fetch` - the authority's signed statement - needs nothing from the leaf. Trust is still Raidiam's: every statement is verified down from the pinned anchor key |
-| PingFederate's attester | Attests a copy on its JWT-SVID, against the bindings in the provider's Entity Configuration and SPIRE's live keys, and signs with the key PingFederate's Entity Configuration publishes (the default) |
-| `entity-host` `/attest` | With `ATTESTER=provider`: the provider attests a copy itself, signing with its attester key (`keys/raidiam/provider/attester.*`), as CBA's provider does. It wants the copy's JWT-SVID as well, checked against SPIRE's live keys and the agent's bindings - CBA's provider attests whatever key it is sent |
+| PingFederate's attester | Attests a copy on its JWT-SVID, against the binding Raidiam's authority publishes for the agent and SPIRE's live keys, and signs with the key PingFederate's Entity Configuration publishes |
 | `rs-accounts` (`rs_accounts.py`) | An MCP server (tools `list_accounts`, `get_balance`) and a federation entity: `oauth_resource` metadata naming PingFederate. It checks the token, then the caller's chain and its capability in Raidiam's policy, whatever the token says |
-| PingFederate | Accepts an attestation through its attester's chain - its own, or the provider's. `RAIDIAM_RESOURCE_ID` on `up.sh` (with authoring) adds a token manager for the resource (`terraform/resource.tf`): without one a request naming it is `invalid_target`; with it the token's `aud` is the resource |
-| Raidiam | Three self-managed statements - the provider, the agent, the resource - each with its entity key. The resource is also an ApiResource on PingFederate's authorisation server record, under an API family of its own (a CBA family's schema pins its own issuer), with `resource` byte-identical to the resource's `ClientId`: Raidiam joins them by that identifier. The agent's capabilities (`authorization_details_types`) come from its **agentic roles** (authority claims, domain `CBA-Global`), not from fields on the statement: `cba.agentic.member` plus a capability role - `cba.agentic.servicing.assistant` grants `accounts_read` and `openid_credential`. `cba.accounts.reader` alone grants none; it only adds a trust mark. The agent refuses a job outside its capabilities before building a request, and the resource refuses the call |
+| PingFederate | Accepts an attestation through its attester's chain, and registers the agent from Raidiam at its first attested token request (`OIDF_ATTESTATION_AUTO_REGISTRATION`). `RAIDIAM_RESOURCE_ID` on `up.sh` (with authoring) adds a token manager for the resource (`terraform/resource.tf`): without one a request naming it is `invalid_target`; with it the token's `aud` is the resource |
+| Raidiam | Two statements: the agent's, federation-managed - Raidiam hosts its Entity Configuration, and its one key is the bridge key in OpenBao - and the resource's, self-managed, with its entity key. The resource is also an ApiResource on PingFederate's authorisation server record, under an API family of its own (a CBA family's schema pins its own issuer), with `resource` byte-identical to the resource's `ClientId`: Raidiam joins them by that identifier. The agent's capabilities (`authorization_details_types`) come from its **agentic roles** (authority claims, domain `CBA-Global`), not from fields on the statement: `cba.agentic.member` plus a capability role - `cba.agentic.servicing.assistant` grants `accounts_read` and `openid_credential`. `cba.accounts.reader` alone grants none; it only adds a trust mark. The agent refuses a job outside its capabilities before building a request, and the resource refuses the call |
 
 ```sh
 raidiam/resource.sh keys && raidiam/resource.sh csr <resource's software statement id>   # upload as rtssigning
-export RAIDIAM_PROVIDER_ID=https://host.docker.internal:8443 RAIDIAM_RESOURCE_ID=https://host.docker.internal:8446
-PF_PROFILE=raidiam SPIRE_BUNDLE_FILE=… RAIDIAM_ATTESTED_CLIENT_ID=https://host.docker.internal:8443/agent/spire-client ./up.sh
-cd spire-workload && docker compose up -d spire-oidc entity-host rs-accounts
-docker compose run --rm agent list-accounts        # or get-balance
+export RAIDIAM_RESOURCE_ID=https://host.docker.internal:8446
+PF_PROFILE=raidiam SPIRE_BUNDLE_FILE=… RAIDIAM_BRIDGE_BACKING=vault ./up.sh
+cd spire-workload && docker compose up -d spire-oidc rs-accounts
+# a Principal version the marketplace deployed: its entity id, and its workload label (the deploy record's slot)
+ATTESTED_CLIENT_ID=<its entity id> docker compose run --rm -l app=<its workload> agent list-accounts   # or get-balance
 ```
 
-`python harness.py` runs the flow end to end and checks every step, with the negatives (another workload refused
-attestation as the agent, a job outside the envelope refused, a call with no token refused); its `attesters` stage
-checks why PingFederate trusted the attestation and runs the job with the other attester. `--attester provider`
-makes the provider the Principal's attester; `--report` writes the result as JSON.
+`python harness.py` tests the newest Principal version the marketplace deployed, end to end, and checks every step,
+with the negatives (another workload refused attestation as the agent, a job outside the envelope refused, a call with
+no token refused); its `attesters` stage checks why PingFederate trusted the attestation and the agent: its attester's
+key, Raidiam vouching for PingFederate, the agent's binding in Raidiam, the attester reading the bindings from there,
+and PingFederate having registered the agent on its verified attestation. `--agent <entity id> --label <workload>`
+tests another version; `--report` writes the result as JSON.
 
-The registration is still `entity-host`'s (0.7.0's token endpoint does not discover an unknown client), so
-`docker compose restart entity-host` after a restart of PingFederate.
+PingFederate registers the agent itself, so nothing needs restarting after a restart of PingFederate.
 
 ## The control centre: the marketplace deploys Principal versions
 
 The agent marketplace (`../marketplace`, in the rig's compose: http://localhost:3000) is the Agent registry and the
-demo's control centre. Approving a **Principal version** there deploys it for real, against Raidiam's admin API:
+demo's control centre. Approving a **Principal version** there deploys it for real, against Raidiam's admin API and
+OpenBao, with no agent provider:
 
 | Step | What |
 |---|---|
-| slot | the provider claims a Principal slot, `https://host.docker.internal:8443/agent/principal-N` (`spire-workload/principals.py`) |
-| statement | `POST /organisations/CBA-123/softwarestatements`: self-managed OpenID Federation entity, `ClientId` = the slot, related to PingFederate |
-| certificates | the provider makes CSRs for its entity and bridge keys (`C=GB, O=CBA Trust Framework, OU=CBA-123, CN=<statement>`) - private keys stay with it - and `POST .../certificates/rtssigning` certifies each |
+| statement | `POST /organisations/CBA-123/softwarestatements`: a federation-managed OpenID Federation entity (`OpenidFederationEntityManagementType` `openid_entity_federation_managed`), related to PingFederate. Raidiam gives it its identifier, `https://rp.directory.cba.raidiam.io/openid_relying_party/<statement id>`, and hosts and signs its Entity Configuration there |
+| SPIFFE binding | `PUT` the statement with `AdditionalSoftwareMetadata`: `spiffe_id` `spiffe://example.org/agent-<first 8 characters of the statement id>`, `spiffe_trust_domain`, `spiffe_bundle_endpoint`, `client_attesters` (PingFederate's issuer). Raidiam keeps at most 255 characters, counted on its own re-serialisation, so `spiffe_bundle_format` is left out |
+| bridge key | the marketplace creates `bridge-<statement id>` in OpenBao (rsa-2048, not exportable) with its enrolment token; the vault makes its CSR (`C=GB, O=CBA Trust Framework, OU=CBA-123, CN=<statement>`) and signs it. The private key never leaves OpenBao |
+| certificate | `POST .../certificates/rtssigning` certifies the bridge CSR. A Principal has no entity key: Raidiam signs its Entity Configuration |
 | roles | `POST .../authorityclaims` per role, from the organisation's own claims (`GET /organisations/CBA-123/authorityclaims`): `{OrganisationAuthorisationDomainRoleClaimID, AuthorisationDomain, Role, Status}` |
-| host, SPIRE | the provider publishes its Entity Configuration; a SPIRE entry `spiffe://example.org/principal-N` <- `docker:label:app:principal-N` |
-| trust | Raidiam vouches for its keys; the provider registers it at PingFederate at once |
+| verify | the statement, its certificates and its roles read back |
+| SPIRE | an entry `spiffe://example.org/agent-<8>` <- `docker:label:app:agent-<8>`; the deploy record's `slot` holds this workload label |
+| trust | the deploy waits until Raidiam serves its Entity Configuration and vouches for it, publishing the bridge key. PingFederate registers it at its first attested token request; nobody registers it beforehand |
 
-Suspend sets the statement `Suspended` in Raidiam (the authority's `/fetch` then answers 404 for it), raises
-`account-disabled` at PingFederate's transmitter and withdraws its Entity Configuration; reinstate reverses all three.
+Suspend sets the statement `Suspended` in Raidiam (the authority's `/fetch` then answers 404 for it) and raises
+`account-disabled` at PingFederate's transmitter; reinstate reverses both.
 Each version's page runs the scenarios - acts as itself, agents act on its behalf, over the policy limit, outside its
-envelope, another workload, attested by the provider, while suspended - each judged against what should happen; the
+envelope, another workload, while suspended - each judged against what should happen; the
 **Objectives** page lists TC-01..28 with the evidence from deploys, lifecycle actions, scenario runs and the
 harness's last report (`spire-workload/reports/latest.json`).
+
+The provider-hosted versions the rig deployed before (`https://host.docker.internal:8443/agent/principal-1` .. `-3`)
+are suspended in Raidiam, and replaced by Raidiam-hosted versions (Principal Agent 1.0.0, 2.0.0 and 3.0.0).
 
 **Signing in.** Raidiam allows `directory:management` only to a person's session for now, so the marketplace signs an
 operator in: PAR with a signed request object, PKCE, JARM, `private_key_jwt` with the directory client's `rtssigning`
 key over mutual TLS with its `rtstransport` certificate (`keys/raidiam/directory-client/`), scope `directory:website`.
-The client's redirect URI is `https://localhost:8443/cb`; the provider's gateway (Kong, 8443) routes `/cb` to the
-marketplace. The session, with its refresh token, is kept in the marketplace's Mongo. When Raidiam allows
+The client's redirect URI is `https://localhost:8443/cb`; the agents' gateway (Kong, 8443, `gateway-agents`) routes
+`/cb` to the marketplace. The session, with its refresh token, is kept in the marketplace's Mongo. When Raidiam allows
 `directory:management` for client credentials: `RAIDIAM_GRANT=client_credentials`, nothing else.
 
-**Slots, or OpenBao.** PingFederate reads its bridge-key file once, at start-up. By default up.sh therefore makes the
-slots' keys in advance (`PRINCIPAL=<slot> raidiam/attested-client.sh keys`, `RAIDIAM_PRINCIPAL_SLOTS`, default
-`principal-1` .. `principal-4`), and a deploy takes a free one.
+**OpenBao.** Principal versions need it (`RAIDIAM_BRIDGE_BACKING=vault`): they have no key files. The bridge keys live in
+OpenBao's transit engine, never exported, and the bridge-key file names them by convention: a `"*"` entry,
+`bridge-{client_suffix}` for every client under `https://rp.directory.cba.raidiam.io/openid_relying_party/`, and an
+entry per sub-agent. A deploy creates `bridge-<statement id>` in OpenBao and has OpenBao make its CSR, and PingFederate
+finds the key by name with no restart, so there is no limit. This needs the module change on branch
+`feature/bridge-keys-openbao` of the module source (`pf-agentic-identity1`; built jars staged in `image/modules`,
+recorded in its `MANIFEST`): the template in `BridgeSigners` and RSA keys in `OpenBaoTransitSigner`.
 
-With **OpenBao** (`RAIDIAM_BRIDGE_BACKING=vault`) there is no limit. The bridge keys live in OpenBao's transit engine,
-never exported, and the bridge-key file names them by convention: an entry under `"*"`, `bridge-{client_suffix}` for
-every client under `<provider>/agent/`. A deploy enrols the next `principal-N`. The provider creates `bridge-<name>` in
-OpenBao and has OpenBao make its CSR, and PingFederate finds the key by name with no restart. This needs the module change
-on branch `feature/bridge-keys-openbao` of the module source (`pf-agentic-identity1`; built jars staged in
-`image/modules`, recorded in its `MANIFEST`): the template in `BridgeSigners` and RSA keys in `OpenBaoTransitSigner`.
+Without OpenBao, PingFederate reads its bridge-key file once, at start-up, and `render-runtime-keys.sh` still renders the
+pre-made slots (`RAIDIAM_PRINCIPAL_SLOTS`, default `principal-1` .. `principal-4`) - but those served the
+provider-hosted versions, and the marketplace no longer deploys into them.
 
 ```sh
 cd spire-workload && docker compose up -d openbao && python3 ../openbao/setup.py   # init, unseal, transit, policies, import
 RAIDIAM_BRIDGE_BACKING=vault ... ./up.sh                                          # PingFederate signs bridge assertions in OpenBao
-RAIDIAM_BRIDGE_BACKING=vault docker compose up -d entity-host                     # the provider enrols agents there
+docker compose up -d marketplace                                                  # the marketplace enrols agents there
 ```
 
 `openbao/setup.py` imports the bridge keys already in use (`bridge-spire-workload`, `bridge-spire-client`,
-`bridge-accounts-agent`, `bridge-payments-agent`, each deployed version's), so Raidiam's certificates stay valid. Its two
-tokens:
-- **PingFederate's** may read and sign with `bridge-*` keys only.
-- **The provider's** may create `bridge-*` keys and their CSRs. It cannot sign with them, export, back up or delete
-  them. OpenBao counts creating a key as an update, so it can change a key's settings (e.g. rotate it), which could
-  disrupt an agent but never impersonate one.
+`bridge-accounts-agent`, `bridge-payments-agent`, each provider-hosted version's), so Raidiam's certificates stay valid.
+Its two tokens:
+- **PingFederate's** (`pf-bridge.token`) may read and sign with `bridge-*` keys only.
+- **The enrolment token** (`enrolment/enrolment.token`, mounted into the marketplace only) may create `bridge-*` keys
+  and their CSRs. It cannot sign with them, export, back up or delete them. OpenBao counts creating a key as an
+  update, so it can change a key's settings (e.g. rotate it), which could disrupt an agent but never impersonate one.
 
 Raidiam's admin API, as found:
 

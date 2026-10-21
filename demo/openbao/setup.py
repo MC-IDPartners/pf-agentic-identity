@@ -7,8 +7,9 @@ vault (OIDF_BRIDGE_SIGNER_BACKING=vault) and the marketplace can enrol new agent
 Writes, under keys/openbao/ (git-ignored, 0600): init.json (the unseal key and root token), pf-bridge.token (PingFederate:
 read and sign bridge-* keys), enrolment/enrolment.token (the marketplace, which deploys agents: create bridge-* keys and
 their CSRs - never sign, export, back up or delete them). Imports, as RSA transit keys, the bridge keys the rig's existing clients are certified with:
-bridge-spire-workload, bridge-spire-client, bridge-accounts-agent, bridge-payments-agent and each deployed Principal
-version's (bridge-principal-N) - from keys/raidiam/... - so Raidiam's certificates stay valid. Nothing is printed but
+bridge-spire-workload, bridge-spire-client, bridge-accounts-agent, bridge-payments-agent and the provider-era Principal
+slots' (bridge-principal-N, where their files exist) - from keys/raidiam/... - so Raidiam's certificates stay valid.
+Principal versions deployed now have their keys created in the vault by the marketplace (bridge-<statement id>). Nothing is printed but
 names; the key files are left where they are.
 
 OPENBAO_ADDR (default http://localhost:8200).

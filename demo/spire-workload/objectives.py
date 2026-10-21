@@ -50,7 +50,7 @@ OUT_OF_SCOPE = {
     "TC-20": "documentary: data protection and backup",
     "TC-22": "documentary: support and operating model",
     "TC-23": "documentary: commercials",
-    "TC-24": "documentary: gap register (README's limitations: act as a string, explicit registration, ...)",
+    "TC-24": "documentary: gap register (README's limitations: act as a string, ...)",
     "TC-25": "partly: the marketplace's manifest metadata (owner, SBOM, repository) is not yet wired in",
     "TC-02": "approval evidenced (Raidiam's verified statement and envelope); suspension and withdrawal through the "
              "Trust Controller need the marketplace on Raidiam's live control plane - signals stand in today",

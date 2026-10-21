@@ -16,7 +16,7 @@
 set -euo pipefail
 export MSYS2_ARG_CONV_EXCL="/C=;/CN="
 HERE="$(cd "$(dirname "$0")/.." && pwd)"
-# AGENT=<name> keeps another agent's keys apart, under keys/raidiam/agents/<name>/ (the provider hosts several);
+# AGENT=<name> keeps another agent's keys apart, under keys/raidiam/agents/<name>/ (the sub-agents, each serving its own Entity Configuration);
 # PRINCIPAL=<slot> a Principal version slot's, under keys/raidiam/principals/<slot>/ (the marketplace deploys versions
 # into slots; the provider makes their CSRs itself); unset, the Principal's, under keys/raidiam/attested-client/.
 DIR="$HERE/keys/raidiam/${AGENT:+agents/$AGENT}"

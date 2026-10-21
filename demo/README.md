@@ -88,7 +88,9 @@ with `keys/suite-tls.crt`.
 `docker-compose.raidiam.yml`: Raidiam's anchor pinned, attestation on with a development attester and bridge
 keys, and `terraform/attestation.tf`'s client. `spire-workload/` then gets a token three ways - client
 attestation from a SPIRE JWT-SVID, a trust chain in its client assertion, and PingFederate resolving its chain
-itself. Development only; [raidiam/README.md](raidiam/README.md) says what to set up in Raidiam and SPIRE.
+itself. The agents need no agent provider: the marketplace deploys Principal versions whose Entity Configurations
+Raidiam hosts, PingFederate's attester reads their SPIFFE bindings from Raidiam, and PingFederate registers each agent
+from its chain at its first attested token request. Development only; [raidiam/README.md](raidiam/README.md) says what to set up in Raidiam and SPIRE.
 
 **A second rig runs beside the first.** `PF_RIG_NAME` names the container, the image and the compose
 project, so a rig built from another checkout doesn't replace this one. From 0.7.0 `PF_RIG_SLOT` (0 to 44) gives it
