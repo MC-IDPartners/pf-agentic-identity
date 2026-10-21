@@ -537,8 +537,14 @@ sequenceDiagram
 the container is, never on what the agent claims. A container SPIRE identifies as another workload gets no attestation as
 the agent, and one instance can be withdrawn by its key.
 
-**Proved by:** the marketplace's *deploy* action (SPIRE entry), the *another workload claims to be it* scenario, and the
-harness's `spire` stage, `SPIRE identified the container` and `attested as this agent` checks.
+Which SPIFFE ID is which agent is Raidiam's word. Each agent's statement carries its binding in
+AdditionalSoftwareMetadata (`spiffe_id`, `spiffe_trust_domain`, `spiffe_bundle_endpoint`, `client_attesters`), and
+Raidiam's authority publishes it as value policies on `openid_relying_party`. PingFederate's attester takes as clients
+the agents whose chains resolve to a binding naming it; what an agent says of itself is overridden.
+
+**Proved by:** the marketplace's *deploy* action (SPIRE entry, the statement's SPIFFE metadata), the *another workload
+claims to be it* scenario, and the harness's `spire` stage, `SPIRE identified the container` and `attested as this
+agent` checks.
 
 ```mermaid
 sequenceDiagram
@@ -546,12 +552,14 @@ sequenceDiagram
     participant SP as SPIRE
     participant AG as Agent
     participant PF as PingFed
-    participant PR as Provider
+    participant RD as Raidiam
+    MP->>RD: statement principal-1, SPIFFE metadata
     MP->>SP: entry principal-1 for docker label app principal-1
     AG->>SP: Workload API, as container app principal-1
     SP-->>AG: JWT-SVID spiffe://example.org/principal-1
     AG->>PF: attestation request, SVID and instance key proof
-    PF->>PR: the provider's spiffe_client_bindings, through its chain
+    PF->>RD: list relying parties, resolve each chain
+    RD-->>PF: principal-1 spiffe_id, bundle endpoint, client_attesters PingFed
     PF->>SP: SPIRE's live JWT-SVID keys
     PF-->>AG: attestation for principal-1, cnf the instance key
     Note over AG,PF: a container SPIRE knows as my-workload gets no attestation as principal-1
@@ -570,8 +578,9 @@ keys, binds its SPIFFE IDs and can attest its instances.
 We used it for three reasons:
 - **The rig mirrors the architecture CBA is evaluating.** Third parties hosting agents is part of that architecture.
 - **Raidiam couldn't carry what attestation needs.** When the rig was built, Raidiam's federation-managed entities lacked
-  `authority_hints`, and Raidiam still doesn't publish per-statement metadata such as SPIFFE bindings. The binding of a
-  workload to an agent therefore had to live in an Entity Configuration we control.
+  `authority_hints`, and Raidiam didn't publish per-statement metadata such as SPIFFE bindings, so the binding of a
+  workload to an agent had to live in an Entity Configuration we control. Both are now in Raidiam, and PingFederate's
+  attester reads the bindings from it (the provider's copy remains for its own attester, `RAIDIAM_SPIFFE_SOURCE=provider`).
 - **The private keys stay with the agents' owner** (TC-26). The provider shows what that owner does: it makes the CSRs
   and signs with keys the Trust Controller never holds.
 
@@ -588,8 +597,9 @@ Most of the provider's jobs can be absorbed by the systems already in the pictur
 That removes a component, the provider's keys and hosting, and the pre-made bridge-key slots. Every binding becomes
 governed in one place, the Trust Controller.
 
-It depends on two changes outside the bank's control:
-- **Raidiam** must publish SPIFFE metadata in its statements.
+It depended on two changes outside the bank's control:
+- **Raidiam** must publish SPIFFE metadata in its statements. Done: AdditionalSoftwareMetadata, published as value
+  policies, and read by PingFederate's attester (`OIDF_ATTESTER_FEDERATION_AUTHORITY`).
 - **PingFederate's modules** must register an unknown, Raidiam-resolvable client at an attested token request.
 
 Raidiam-hosted Entity Configurations already carry `authority_hints` and resolve through the authority (checked
