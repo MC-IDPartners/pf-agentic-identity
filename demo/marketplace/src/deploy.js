@@ -42,21 +42,32 @@ function describe(err) {
 
 /**
  * The agent's SPIFFE binding as Raidiam takes it: AdditionalSoftwareMetadata, which Raidiam's authority publishes as a
- * value policy on these five openid_relying_party members (a leaf cannot set them itself), so PingFederate reads them
- * from the trust chain. At most 255 characters, so one attester: PingFederate's, the agents' default.
+ * value policy on these openid_relying_party members (a leaf cannot set them itself), so PingFederate reads them from
+ * the trust chain. Raidiam keeps at most 255 characters, counted on its own re-serialisation (", " and ": " between
+ * members, as Python's json.dumps writes them) - and over it, answers 500 rather than a validation error. All five
+ * members come to 258 or more, so spiffe_bundle_format is left out: the bundle endpoint serves a JWKS, which a consumer
+ * assumes when the format is absent. One attester, PingFederate's, the agents' default.
  */
+function spaced(value) {
+  if (Array.isArray(value)) return `[${value.map(spaced).join(', ')}]`;
+  if (value && typeof value === 'object') {
+    return `{${Object.entries(value).map(([k, v]) => `${JSON.stringify(k)}: ${spaced(v)}`).join(', ')}}`;
+  }
+  return JSON.stringify(value);
+}
+
 function spiffeMetadata(spiffeId) {
-  const meta = JSON.stringify({
+  const members = {
     spiffe_id: spiffeId,
     spiffe_trust_domain: spiffeId.split('/')[2],
     spiffe_bundle_endpoint: config.rig.spireBundleUrl,
-    spiffe_bundle_format: 'jwks',
     client_attesters: [config.rig.pfIssuer],
-  });
-  if (meta.length > 255) {
-    throw Object.assign(new Error(`the SPIFFE metadata for ${spiffeId} is ${meta.length} characters; Raidiam keeps at most 255`), { status: 400 });
+  };
+  const length = spaced(members).length;
+  if (length > 255) {
+    throw Object.assign(new Error(`the SPIFFE metadata for ${spiffeId} is ${length} characters as Raidiam counts them; it keeps at most 255`), { status: 400 });
   }
-  return meta;
+  return JSON.stringify(members);
 }
 
 function statementBody(doc, d) {
