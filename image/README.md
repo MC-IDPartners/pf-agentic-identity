@@ -342,7 +342,10 @@ Count the digest lines instead: `grep -cE '^[0-9a-f]{64}  ' MANIFEST`.
 > Identity's licence agreement for you: set `PING_IDENTITY_ACCEPT_EULA=YES` at run time, or the entrypoint stops
 > the boot. The base image's boot hook pulls a fresh evaluation licence when `PING_IDENTITY_DEVOPS_USER` +
 > `PING_IDENTITY_DEVOPS_KEY` are present in the environment. Eval licences are short-lived (~7 days) and
-> re-fetched only at container start.
+> re-fetched only at container start. Or mount a licence file of your own at
+> `/opt/in/instance/server/default/conf/pingfederate.lic`: the hook fetches nothing when the server already has one,
+> and the DevOps variables are then not needed ([the top-level README](../README.md#licensing-pingfederate)). Mount
+> it; never `COPY` it into an image built from this one.
 
 ## The archive at boot
 

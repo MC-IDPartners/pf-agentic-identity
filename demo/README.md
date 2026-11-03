@@ -21,6 +21,17 @@ PING_IDENTITY_DEVOPS_KEY=<your DevOps key>
 Get them at https://devops.pingidentity.com/how-to/devopsRegistration/. Nothing licensed and no key
 ever lands in git: everything `up.sh` generates is under `.gitignore` here.
 
+**Or a licence file.** With a `pingfederate.lic` of your own, no DevOps credentials are needed:
+
+```sh
+PF_LICENSE_FILE=/path/to/pingfederate.lic ./up.sh
+```
+
+`author.sh` stages the file into the authoring PingFederate's `conf/`, and `docker-compose.license.yml` mounts it
+read-only at `/opt/in/instance/server/default/conf/pingfederate.lic` in the rig, where the base image's licence hook
+finds it and fetches nothing. It must cover PingFederate 13.1. [The top-level README](../README.md#licensing-pingfederate)
+says how to do the same outside the rig.
+
 When it finishes, PF answers on `https://localhost:9031` (self-signed) with discovery at
 `/.well-known/openid-configuration`, the SSF transmitter at `/.well-known/ssf-configuration`, an HTTP
 listener on 9080 and the admin console on 9999 (`administrator`, password in `.author.env`). The image

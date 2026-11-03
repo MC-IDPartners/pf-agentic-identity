@@ -22,6 +22,8 @@
 #   PF_BASE_URL     the origin PF advertises as its issuer. Default https://localhost:$PF_PORT_HTTPS,
 #                   which is what a suite on this machine reaches. For a PF on a public address, set it
 #                   to that origin - it is baked into the archive at step 3.
+#   PF_LICENSE_FILE a pingfederate.lic to license both PingFederates with (the authoring one and the rig) instead
+#                   of fetching evaluation licences with Ping DevOps credentials; then none are needed.
 #   SKIP_AUTHOR=1   reuse an existing data.zip (steps 1-4 skipped); rebuild the image only.
 #   SKIP_BUILD=1    reuse the staged module jars (step 5 skipped), in either mode.
 #   PF_RELEASE      <version> (0.6.1 or later) or <dir>: stage the modules from that release's assets instead of
@@ -96,11 +98,20 @@ SUITE_BASE_URL="${SUITE_BASE_URL:-https://host.docker.internal:$SUITE_PORT}"
 SUITE_ALIAS="${SUITE_ALIAS:-pf-agentic-identity-federation-op}"
 
 PING_CONFIG="${PING_DEVOPS_CONFIG:-$HOME/.pingidentity/config}"
-[[ -f "$PING_CONFIG" ]] || {
-  echo "ERROR: no licence details at $PING_CONFIG." >&2
-  echo "       Create a KEY=VALUE file with PING_IDENTITY_DEVOPS_USER and PING_IDENTITY_DEVOPS_KEY (your" >&2
-  echo "       Ping DevOps credentials), or point PING_DEVOPS_CONFIG at one. See README.md." >&2
-  exit 1; }
+if [[ -n "${PF_LICENSE_FILE:-}" ]]; then
+  # A licence file instead of DevOps credentials: author.sh stages it into the authoring PF, and
+  # docker-compose.license.yml mounts it into the rig. Absolute, and C:/... under Git Bash, for docker compose.
+  [[ -f "$PF_LICENSE_FILE" ]] || { echo "ERROR: PF_LICENSE_FILE=$PF_LICENSE_FILE is not a file" >&2; exit 1; }
+  PF_LICENSE_FILE="$(cd "$(dirname "$PF_LICENSE_FILE")" && { pwd -W 2>/dev/null || pwd; })/$(basename "$PF_LICENSE_FILE")"
+  export PF_LICENSE_FILE
+else
+  [[ -f "$PING_CONFIG" ]] || {
+    echo "ERROR: no licence details at $PING_CONFIG." >&2
+    echo "       Create a KEY=VALUE file with PING_IDENTITY_DEVOPS_USER and PING_IDENTITY_DEVOPS_KEY (your" >&2
+    echo "       Ping DevOps credentials), or point PING_DEVOPS_CONFIG at one - or set PF_LICENSE_FILE to a" >&2
+    echo "       pingfederate.lic. See README.md." >&2
+    exit 1; }
+fi
 TOOLS=(docker terraform node curl unzip)
 [[ "$PFAI_MODE" == release ]] || TOOLS+=(mvn)
 for tool in "${TOOLS[@]}"; do
@@ -197,6 +208,9 @@ if [[ "${PF_PROFILE:-}" == raidiam ]]; then
     [[ -f "$HERE/keys/openbao/pf-bridge.token" ]] || { echo "ERROR: RAIDIAM_BRIDGE_BACKING=vault but no keys/openbao/pf-bridge.token - run openbao/setup.py" >&2; exit 1; }
     COMPOSE_FILE="$COMPOSE_FILE:docker-compose.openbao.yml"
   fi
+fi
+if [[ -n "${PF_LICENSE_FILE:-}" ]]; then
+  export COMPOSE_PATH_SEPARATOR=":" COMPOSE_FILE="${COMPOSE_FILE:-docker-compose.yml}:docker-compose.license.yml"
 fi
 cat "$HERE/vars.env" ${PROFILE_VARS[@]+"${PROFILE_VARS[@]}"} \
   | sed -E "/^(OIDF_SSF_ISSUER|OIDF_FEDERATION_[A-Z_]+)=/ s#https://localhost:9031#$PF_BASE_URL#" \

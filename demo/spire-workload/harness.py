@@ -13,7 +13,7 @@ registers each agent from Raidiam at its first attested token request.
 
 Stages, each a pass, a fail or a skip in the report:
 
-  preflight    PingFederate answers; SPIRE's OIDC provider, the resources, the sub-agents and the gateways are up;
+  preflight    PingFederate answers, locally and at its public issuer; SPIRE's OIDC provider, the resources, the sub-agents and the gateways are up;
                Raidiam hosts the agent's Entity Configuration and vouches for it, publishing its bridge key, with
                capabilities; each sub-agent serves its own Entity Configuration
   spire        a SPIRE entry for the agent's SPIFFE ID, selecting containers by the label the agent runs under;
@@ -212,6 +212,23 @@ def preflight(rep: Report, a) -> bool:
         rep.expect("preflight", "PingFederate answers", out.startswith("200"), out)
     except Exception as e:
         rep.expect("preflight", "PingFederate answers", False, str(e))
+        return False
+
+    # PingFederate's public issuer must serve PingFederate itself: its token endpoint trusts its own attester by
+    # fetching its own Entity Configuration there, and Raidiam and external parties resolve it there. A tunnel that is
+    # down answers with a page of its own, so check for PingFederate's signed statement, not just a status.
+    try:
+        url = a.issuer.rstrip("/") + "/.well-known/openid-federation"
+        ec = claims(in_network(
+            f"import requests;r=requests.get({json.dumps(url)},headers={{'Accept':'application/entity-statement+jwt'}},"
+            "timeout=20);r.raise_for_status();print(r.text.strip())"))
+        reachable = ec.get("iss") == a.issuer.rstrip("/")
+        rep.expect("preflight", "PingFederate's public issuer serves its Entity Configuration", reachable,
+                   f"iss {ec.get('iss')}" if reachable else f"{a.issuer} served an Entity Configuration for {ec.get('iss')}")
+    except Exception as e:
+        rep.expect("preflight", "PingFederate's public issuer serves its Entity Configuration", False,
+                   f"{a.issuer}/.well-known/openid-federation: {type(e).__name__}: {e} - is the tunnel to PingFederate up? "
+                   "Every attested token request fails with invalid_client until it is")
         return False
 
     try:

@@ -588,37 +588,7 @@ sequenceDiagram
 
 ---
 
-## Without an agent provider
 
-### Why the rig had one
-
-The rig first followed CBA's own agentic pattern (`provider.demo.cba.raidiam.io`, agent-r): agents hosted by an **agent
-provider**, a federation entity Raidiam vouched for (`entity-host` here). It existed for three reasons:
-- **It mirrored the architecture CBA was evaluating**, in which third parties host agents.
-- **Raidiam could not carry what attestation needs.** Its federation-managed entities lacked `authority_hints`, and it
-  did not publish per-statement metadata such as SPIFFE bindings, so the binding of a workload to an agent had to live
-  in an Entity Configuration the rig controlled.
-- **The private keys stayed with the agents' owner** (TC-26): the provider made the CSRs and signed with keys the Trust
-  Controller never held.
-
-Raidiam now does both things it lacked: its federation-managed Entity Configurations carry `authority_hints` and resolve
-through the authority, and it publishes a statement's `AdditionalSoftwareMetadata` as value policies. PingFederate's
-modules now register an attested agent themselves. So the rig runs without a provider.
-
-### What replaced each of its jobs
-
-| The provider's job | Now |
-|---|---|
-| Hosting and signing the Principals' Entity Configurations | **Raidiam**: each Principal version is a federation-managed statement (`openid_entity_federation_managed`). Raidiam serves and signs its Entity Configuration at `https://rp.directory.cba.raidiam.io/openid_relying_party/<statement id>`, with `client_registration_types` `automatic` and a `jwks_uri` pointing at Raidiam's keystore of the certificates it issued |
-| Hosting the sub-agents' Entity Configurations | **Each sub-agent** serves its own, and its resource metadata, at its identifier, through Kong on 8443 (`gateway-agents`) |
-| Holding the agents' entity keys and making their CSRs | A Principal has **no entity key**: Raidiam signs its configuration. Each sub-agent keeps its own (`keys/raidiam/agents/<name>/`) |
-| Publishing the SPIFFE bindings (`spiffe_client_bindings`) | **Raidiam**: the binding is on the statement (`AdditionalSoftwareMetadata`), published by its authority as value policies, and read from there by PingFederate's attester (`OIDF_ATTESTER_FEDERATION_AUTHORITY`) |
-| Enrolling each agent's bridge key in the KMS | **The marketplace**, with OpenBao's enrolment token: it creates `bridge-<statement id>`, and the vault makes and signs its CSR |
-| Registering the agents at PingFederate, and again before each registration ended | **PingFederate** itself, at the agent's first attested token request (`OIDF_ATTESTATION_AUTO_REGISTRATION=true`) |
-| Attesting instances (`/attest`) | **PingFederate's co-hosted attester** only |
-| Withdrawing a suspended agent's Entity Configuration | **Raidiam's status** (`Suspended`: the authority stops vouching) and a Shared Signals `account-disabled` |
-| Reporting a version's status to the marketplace | **The marketplace** asks Raidiam (served, vouched, the bridge key published) and PingFederate's log (registered) |
-| The edge on 8443 | **`gateway-agents`**: the sub-agents' identities and MCP, and `/cb` for the marketplace's Raidiam sign-in |
 
 Every binding is now governed in one place, the Trust Controller. What the rig no longer shows is an organisation
 hosting agents for others, and an attester other than PingFederate's.

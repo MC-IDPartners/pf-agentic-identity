@@ -1,0 +1,9 @@
+# A licence file instead of Ping DevOps credentials (PF_LICENSE_FILE=/path/to/pingfederate.lic ./up.sh layers this on
+# itself). The base image's licence hook (17-check-license.sh) fetches an evaluation licence only when it finds no
+# pingfederate.lic in the instance's conf/; the bootstrap copies everything under /opt/in over the instance before the
+# hooks run, so a file mounted here is the licence PingFederate starts with, and no DevOps credentials are needed.
+# up.sh resolves PF_LICENSE_FILE to an absolute path; PingFederate's user (uid 9031, gid 0) must be able to read it.
+services:
+  pingfederate:
+    volumes:
+      - ${PF_LICENSE_FILE:?set PF_LICENSE_FILE to a pingfederate.lic}:/opt/in/instance/server/default/conf/pingfederate.lic:ro

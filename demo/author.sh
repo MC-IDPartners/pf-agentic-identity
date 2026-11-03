@@ -9,6 +9,7 @@
 #                   created with. Generate one (umask 177; never commit it) and keep using it: apply.sh
 #                   and export.sh read the same file. It becomes the archive's admin password.
 #   ~/.pingidentity/config  the DevOps user and key the image fetches its evaluation licence with
+#   PF_LICENSE_FILE a pingfederate.lic instead: staged into the server's conf/, so the image fetches nothing
 set -euo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
 : "${PF_AUTHOR_ENV:?set PF_AUTHOR_ENV to a KEY=VALUE file holding PING_IDENTITY_PASSWORD}"
@@ -27,8 +28,10 @@ docker rm -f "$NAME" >/dev/null 2>&1 || true
 # CREATE_INITIAL_ADMIN_USER: the image defaults it to false and then never accepts the licence
 # agreement or creates the administrator, and every admin API call answers 403
 # license_agreement_not_accepted for as long as you care to wait.
+LICENCE_ENV=()
+[[ -n "${PF_LICENSE_FILE:-}" ]] || LICENCE_ENV=(--env-file "$PING_CONFIG")
 docker create --name "$NAME" \
-  --env-file "$PING_CONFIG" --env-file "$PF_AUTHOR_ENV" \
+  ${LICENCE_ENV[@]+"${LICENCE_ENV[@]}"} --env-file "$PF_AUTHOR_ENV" \
   -e PING_IDENTITY_ACCEPT_EULA=YES -e CREATE_INITIAL_ADMIN_USER=true \
   -p "127.0.0.1:$RUNTIME_PORT:9031" -p "127.0.0.1:$ADMIN_PORT:9999" "$IMAGE" >/dev/null
 # Staged BEFORE first start so the server comes up with it and the exported archive carries it; see
@@ -45,6 +48,12 @@ cp "$HERE"/config-store/*.xml "$STAGE/instance/server/default/data/config-store/
 PLUGIN="$PFAI_IMAGE_DIR/modules/pf.plugins.ciba-sim.jar"
 [[ -f "$PLUGIN" ]] || { echo "ERROR: no $PLUGIN - stage the conformance profile first; up.sh does (stage-modules.sh or stage-from-release.sh, --profile conformance)" >&2; exit 1; }
 cp "$PLUGIN" "$STAGE/instance/server/default/deploy/"
+# A licence file, where the base image's licence hook looks before it would fetch an evaluation licence.
+if [[ -n "${PF_LICENSE_FILE:-}" ]]; then
+  mkdir -p "$STAGE/instance/server/default/conf"
+  cp "$PF_LICENSE_FILE" "$STAGE/instance/server/default/conf/pingfederate.lic"
+  chmod 644 "$STAGE/instance/server/default/conf/pingfederate.lic"
+fi
 docker cp "$STAGE/instance" "$NAME:/opt/in/"
 docker start "$NAME" >/dev/null
 

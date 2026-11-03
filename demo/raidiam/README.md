@@ -24,6 +24,9 @@ the mock attester (`oidf.mock.attesters`): the one attester the token endpoint t
 through its federation chain ("Attesters trusted through the federation", below). There is no agent provider: Raidiam
 hosts the Principal agents' Entity Configurations, and the sub-agents serve their own.
 
+To add an agent of your own - its metadata hosted by Raidiam or served by itself - follow
+[the top-level README, "Setting up agents in Raidiam"](../../README.md#setting-up-agents-in-raidiam).
+
 ## What it adds to the rig
 
 | File | What |

@@ -12,6 +12,8 @@
 #   suite/*.json   suite configurations rendered from suite/*.template.json WITH the private keys in
 .author.env
 keys/
+# A PingFederate licence (PF_LICENSE_FILE) is Ping Identity's and yours: never in git, wherever you keep it.
+*.lic
 secrets.env
 data*.zip
 overlay/
